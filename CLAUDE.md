@@ -116,6 +116,44 @@ picklist option or field label by name.
 
 ---
 
+## Hosting & portability
+
+Postgres is Supabase today (session-mode pooler, `ap-southeast-1`) and moves to
+self-managed Vultr later. Full plan and rationale: `docs/SUPABASE-MIGRATION.md`.
+
+- **`db:migrate` and `db:push` are LOCAL ONLY.** `tools/guard-local-db.js`
+  refuses any non-localhost target. Hosted databases get `db:deploy`, which
+  applies committed migrations and never resets.
+- **Every migration that creates a table must `ENABLE ROW LEVEL SECURITY` on
+  it.** The blanket enable in `20260818160000_rls_enable` snapshotted the
+  tables that existed then; it does not cover new ones. The invariant to hold:
+  no table in `public` other than `_prisma_migrations` has `rowsecurity` false.
+- **Nothing may name a Supabase-only surface** — no `supabase-js`, no
+  `auth.users` FK, no pg_cron schedule, no PostgREST. None of it survives
+  `pg_dump --schema=public`, so each one is a silent data-loss trap at cutover.
+- **Tables are owned by `crm_app`, never `postgres`.** Ownership is fixed at
+  CREATE TABLE time; changing it later needs `REASSIGN OWNED` plus re-pointing
+  every connection string.
+
+---
+
+## Files: store ids, never URLs
+
+`FILE` and `IMAGE` fields store an `AttachmentRef` — `{ attachmentId, name,
+size, contentType }` — and resolve bytes through the `Attachment` table.
+
+**Never store a provider URL in a field value.** `AuditLogger.diff()` writes
+raw field values into `AuditLog.changes`, and invariant 2 forbids ever
+UPDATEing that log. A URL written into a field diff can never be corrected, so
+a bucket move or a provider change leaves the timeline pointing at dead objects
+with no legal code path to fix it. An id survives all of it.
+
+For the same reason a superseded attachment is **soft-deleted with its bytes
+retained** — an older diff still references that id. Orphan collection must
+exclude any `objectKey` reachable from `AuditLog.changes`.
+
+---
+
 ## Logging layers — do not conflate
 
 | Layer | Written by | Volume | Rule |

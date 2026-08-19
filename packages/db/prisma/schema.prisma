@@ -421,6 +421,7 @@ model User {
   imports        ImportBatch[]
   refreshTokens  RefreshToken[]
   configChanges  ConfigChangeLog[]
+  attachments    Attachment[]
 
   @@index([roleId, isActive])
   @@index([departmentId])
@@ -611,6 +612,47 @@ model Record {
 
 /// Admin-created lead source. Integrately posts campaign leads here;
 /// ARK Terminal posts direct to its own source.
+/// Every uploaded file and image, for every module, addressed by an OPAQUE ID.
+///
+/// FILE and IMAGE field values store `attachmentId`, NEVER a provider URL.
+/// `AuditLogger.diff()` writes raw field values into `AuditLog.changes`, and
+/// invariant 2 forbids ever UPDATEing that log — so a URL written into a field
+/// diff could never be corrected, and the timeline would point at dead objects
+/// forever. An id stays valid across a bucket move, a CDN change, and the
+/// eventual migration off Supabase Storage.
+///
+/// Bytes are served through the app, resolving the owning record via the
+/// scoped repository, so file access obeys the same permission engine as the
+/// record it hangs off.
+model Attachment {
+  id          String @id @default(uuid())
+  /// storage bucket — provider-agnostic, S3 protocol on every host we target
+  bucket      String
+  /// key within the bucket. Never a URL: the endpoint is env, not data.
+  objectKey   String
+  contentType String
+  sizeBytes   BigInt
+
+  /// what this hangs off. entityType is a module SLUG-INDEPENDENT discriminator
+  /// resolved through StorageResolver, never branched on by callers.
+  entityType String
+  entityId   String
+  /// which FieldDefinition.key holds it
+  fieldKey   String
+
+  uploadedById String?
+  /// soft delete — a superseded attachment keeps its bytes, because an older
+  /// AuditLog diff still references this id and that log is append-only
+  isDeleted Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  uploadedBy User? @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  @@unique([bucket, objectKey])
+  @@index([entityType, entityId, fieldKey])
+  @@index([isDeleted, createdAt])
+}
+
 model WebhookSource {
   id            String   @id @default(uuid())
   name          String

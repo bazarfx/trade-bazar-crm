@@ -26,6 +26,21 @@ export interface FieldDef {
 
 const E164 = /^\+?[1-9]\d{7,14}$/;
 
+/**
+ * What a FILE or IMAGE field stores on a record.
+ *
+ * `name`, `size` and `contentType` are denormalised so a list view, an export
+ * and a timeline entry can render without joining Attachment. The bytes are
+ * reached only through `attachmentId`.
+ */
+export const attachmentRefSchema = z.object({
+  attachmentId: z.string().uuid(),
+  name: z.string().min(1),
+  size: z.number().int().nonnegative(),
+  contentType: z.string().min(1),
+});
+export type AttachmentRef = z.infer<typeof attachmentRefSchema>;
+
 function baseSchema(f: FieldDef): z.ZodTypeAny {
   const v = f.validation ?? {};
 
@@ -88,7 +103,11 @@ function baseSchema(f: FieldDef): z.ZodTypeAny {
 
     case 'FILE':
     case 'IMAGE':
-      return z.object({ url: z.string(), name: z.string(), size: z.number() });
+      // An OPAQUE id, never a URL. Field values land in `AuditLog.changes`
+      // via AuditLogger.diff(), and that log is append-only — a stored URL
+      // could never be corrected when the bucket, CDN or provider changes.
+      // See `Attachment` in schema.prisma.
+      return attachmentRefSchema;
 
     default: {
       const _exhaustive: never = f.type;
