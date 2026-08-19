@@ -1,0 +1,33 @@
+{
+  "name": "trade-bazar-crm",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "tools/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "npm run dev --workspace=apps/web",
+    "dev:worker": "npm run dev --workspace=apps/worker",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "tsc -b --pretty && tsc -p apps/web --noEmit --pretty && tsc -p apps/worker --noEmit --pretty",
+    "db:generate": "prisma generate --schema packages/db/prisma/schema.prisma",
+    "db:migrate": "node --env-file=.env tools/guard-local-db.js && prisma migrate dev --schema packages/db/prisma/schema.prisma",
+    "db:push": "node --env-file=.env tools/guard-local-db.js && prisma db push --schema packages/db/prisma/schema.prisma",
+    "db:deploy": "prisma migrate deploy --schema packages/db/prisma/schema.prisma",
+    "db:status": "prisma migrate status --schema packages/db/prisma/schema.prisma",
+    "db:seed": "tsx --env-file=.env packages/db/src/seed.ts",
+    "db:studio": "prisma studio --schema packages/db/prisma/schema.prisma",
+    "figma:tokens": "node tools/figma/extract-tokens.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "prisma": "^6.2.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,0 +1,31 @@
+/* Design tokens are GENERATED — `npm run figma:tokens`. Never edit tokens.css
+   by hand and never hardcode a colour or radius anywhere else. */
+@import './tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    background: var(--background);
+    color: var(--body);
+    font-family: Inter, system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    color: var(--heading);
+  }
+
+  /* Full-screen overlays are the only overlay in this product — no modals.
+     A single scroll lock, applied by the overlay shell. */
+  body[data-overlay-open='true'] {
+    overflow: hidden;
+  }
+}

@@ -1,0 +1,816 @@
+// Trade Bazar CRM Platform — Prisma schema
+// Spec v3.0. Hybrid storage: real tables for core modules, generic `Record` for admin-created ones.
+//
+// RULE: this file defines SYSTEM columns only — the fixed, indexed, foreign-keyed parts the
+// platform depends on. Everything an Admin creates lives in a `custom Json` column and is
+// governed by FieldDefinition at runtime. Adding a customer field must NEVER touch this file.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  // runtime — web and worker. Through the pooler on hosted Postgres.
+  url        = env("DATABASE_URL")
+  // prisma CLI only (migrate / db pull / studio). NEVER read at runtime.
+  // Migrations cannot run through a transaction-mode pooler: they need an
+  // advisory lock a pooled connection will not hold.
+  directUrl  = env("DIRECT_URL")
+  // Deliberately unqualified — pg_trgm lives in `public` on every host we
+  // target. Pinning it to Supabase's `extensions` schema would abort
+  // `migrate deploy` on statement one against a fresh Vultr box.
+  extensions = [pg_trgm]
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ENUMS — only for things that are structural, never customer-facing
+// ═══════════════════════════════════════════════════════════════════
+
+enum FieldType {
+  SINGLE_LINE
+  MULTI_LINE
+  EMAIL
+  PHONE
+  NUMBER
+  DECIMAL
+  CURRENCY
+  PERCENT
+  DROPDOWN
+  MULTI_SELECT
+  LANGUAGE_PICKER
+  DATE
+  DATE_TIME
+  CHECKBOX
+  TOGGLE
+  URL
+  FILE
+  IMAGE
+  USER_LOOKUP
+  RECORD_LINK
+  FORMULA
+  AUTONUMBER
+}
+
+/// Semantic meaning of a status, read by the system and by reports.
+/// This is what lets an Admin rename "Converted" to "Funded" without breaking conversion.
+enum StatusTag {
+  NEUTRAL
+  WARM
+  HOT
+  COLD
+  LOST
+  INVALID
+  CONVERTED
+  SIGNED_UP
+}
+
+enum LeadSource {
+  CAMPAIGN
+  ARK_TERMINAL
+}
+
+enum ViewScope {
+  NONE
+  OWN
+  GROUP
+  DEPARTMENT
+  ALL
+}
+
+enum SpecialPermission {
+  REASSIGN_LEADS
+  TRANSFER_DEAL_OWNERSHIP
+  MANAGE_FIELDS_LAYOUTS
+  MANAGE_STATUSES
+  MANAGE_USERS_ROLES
+  MANAGE_DEPARTMENTS_GROUPS
+  MANAGE_CAMPAIGNS
+  IMPORT_EXPORT
+  BULK_OPERATIONS
+  VIEW_AUDIT_LOGS
+}
+
+enum ActorType {
+  USER
+  SYSTEM_ARK_WEBHOOK
+  SYSTEM_ROUND_ROBIN
+  SYSTEM_IMPORT
+  SYSTEM_CAMPAIGN_INTAKE
+}
+
+enum AuditAction {
+  RECORD_CREATED
+  RECORD_UPDATED
+  RECORD_DELETED
+  RECORD_RESTORED
+  FIELD_CHANGED
+  STATUS_CHANGED
+  ASSIGNED
+  REASSIGNED
+  OWNERSHIP_TRANSFERRED
+  DEPOSIT_RECEIVED
+  CONVERTED
+  NOTE_ADDED
+  CALL_LOGGED
+  IMPORTED
+  WEBHOOK_RECEIVED
+  DUPLICATE_FLAGGED
+  DUPLICATE_RESOLVED
+  USER_LOGIN
+  USER_LOGOUT
+  CONFIG_CHANGED
+}
+
+enum WebhookStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+  REPLAYED
+  IGNORED
+}
+
+enum DuplicateStatus {
+  PENDING
+  KEPT_BOTH
+  MERGED
+  DISMISSED
+}
+
+enum LayoutTarget {
+  FORM
+  DETAIL
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CONFIGURATION — the dynamic engine. Everything reads from here.
+// ═══════════════════════════════════════════════════════════════════
+
+/// One row per module. Core modules (isCore) resolve to a real table;
+/// Admin-created modules resolve to the generic `Record` table.
+model ModuleDefinition {
+  id               String   @id @default(uuid())
+  slug             String   @unique
+  label            String
+  labelPlural      String
+  icon             String?
+  description      String?
+  /// true = backed by a dedicated table (leads, deals, users, deposits, campaigns)
+  isCore           Boolean  @default(false)
+  /// core modules can be disabled and renamed, never deleted
+  isSystem         Boolean  @default(false)
+  isEnabled        Boolean  @default(true)
+  hasTimeline      Boolean  @default(true)
+  hasOwner         Boolean  @default(true)
+  navOrder         Int      @default(0)
+  /// which field renders as the record's title
+  recordTitleField String   @default("name")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  fields      FieldDefinition[]
+  sections    FormSection[]
+  statuses    Status[]
+  layouts     Layout[]
+  views       SavedView[]
+  permissions RolePermission[]
+  records     Record[]
+  imports     ImportBatch[]
+  sources     WebhookSource[]
+
+  @@index([isEnabled, navOrder])
+}
+
+/// Every field of every module. Drag-and-drop field creation = one insert here.
+model FieldDefinition {
+  id        String    @id @default(uuid())
+  moduleId  String
+  key       String
+  label     String
+  type      FieldType
+  helpText  String?
+
+  isRequired Boolean @default(false)
+  isUnique   Boolean @default(false)
+  /// system fields cannot be deleted — assignment, matching and logging depend on them.
+  /// they CAN be renamed, restyled, moved and reordered.
+  isSystem   Boolean @default(false)
+  /// build a Postgres expression index on this field's JSONB path
+  isIndexed  Boolean @default(false)
+  /// soft delete — historical values survive and stay visible in the timeline
+  isDeleted  Boolean @default(false)
+
+  /// for core modules: the real column this field maps to. null = lives in `custom` JSONB.
+  systemColumn String?
+
+  /// { min, max, minLength, maxLength, regex, ... }
+  validation   Json?
+  defaultValue Json?
+
+  sectionId    String?
+  displayOrder Int     @default(0)
+
+  /// RECORD_LINK / USER_LOOKUP target
+  relatedModuleId String?
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  module  ModuleDefinition @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  section FormSection?     @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  options PicklistOption[]
+
+  @@unique([moduleId, key])
+  @@index([moduleId, isDeleted, displayOrder])
+}
+
+model FormSection {
+  id            String  @id @default(uuid())
+  moduleId      String
+  label         String
+  displayOrder  Int     @default(0)
+  /// 1-3 column grid inside the section card
+  columns       Int     @default(3)
+  isCollapsible Boolean @default(false)
+  isDeleted     Boolean @default(false)
+
+  module ModuleDefinition  @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  fields FieldDefinition[]
+
+  @@index([moduleId, displayOrder])
+}
+
+model PicklistOption {
+  id                String  @id @default(uuid())
+  fieldDefinitionId String
+  label             String
+  value             String
+  color             String?
+  displayOrder      Int     @default(0)
+  isDefault         Boolean @default(false)
+  isDeleted         Boolean @default(false)
+
+  field FieldDefinition @relation(fields: [fieldDefinitionId], references: [id], onDelete: Cascade)
+
+  @@unique([fieldDefinitionId, value])
+  @@index([fieldDefinitionId, isDeleted, displayOrder])
+}
+
+/// Per-module status lists. Fully Admin-editable: create, rename, recolour, re-tag,
+/// reorder, delete. The `tag` carries the semantic meaning the system reads.
+model Status {
+  id           String    @id @default(uuid())
+  moduleId     String
+  name         String
+  tag          StatusTag @default(NEUTRAL)
+  color        String?
+  displayOrder Int       @default(0)
+  /// system statuses are set by the webhook pipeline; still renameable and recolourable
+  isSystem     Boolean   @default(false)
+  isDeleted    Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+
+  module ModuleDefinition @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  leads  Lead[]
+  deals  Deal[]
+
+  @@unique([moduleId, name])
+  @@index([moduleId, isDeleted, displayOrder])
+}
+
+/// Drag-and-drop layout for a module's form and detail page.
+/// Optional roleId allows per-role layouts.
+model Layout {
+  id       String       @id @default(uuid())
+  moduleId String
+  target   LayoutTarget @default(FORM)
+  roleId   String?
+  /// { sections: [{ id, fields: [fieldId] }] }
+  layout   Json
+  /// [{ if: {field, op, value}, then: {action: show|hide|require, fields: []} }]
+  rules    Json?
+  isActive Boolean      @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  module ModuleDefinition @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  role   Role?            @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([moduleId, target, roleId])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PEOPLE — roles, permissions, departments, groups, users
+// ═══════════════════════════════════════════════════════════════════
+
+/// Only Admin ships. It is seeded with every permission and LOCKED
+/// (isLocked = cannot be edited, weakened or deleted). All other roles are Admin-created.
+model Role {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  isLocked  Boolean  @default(false)
+  isDeleted Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users       User[]
+  permissions RolePermission[]
+  specials    RoleSpecialPermission[]
+  layouts     Layout[]
+  views       SavedView[]
+}
+
+model RolePermission {
+  id        String    @id @default(uuid())
+  roleId    String
+  moduleId  String
+  viewScope ViewScope @default(NONE)
+  canCreate Boolean   @default(false)
+  canEdit   Boolean   @default(false)
+  canDelete Boolean   @default(false)
+  /// { hidden: [fieldId], readonly: [fieldId] }
+  fieldRules Json?
+
+  role   Role             @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  module ModuleDefinition @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, moduleId])
+}
+
+model RoleSpecialPermission {
+  id         String            @id @default(uuid())
+  roleId     String
+  permission SpecialPermission
+
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permission])
+}
+
+model Department {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  isDeleted Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  users User[]
+}
+
+/// Freeform teams, typically by language. Users belong to MANY.
+/// Groups are the backbone of assignment: campaign leads round-robin inside the group.
+model Group {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  /// the language this group serves — drives lead → group matching
+  language  String?
+  isDeleted Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  members GroupMember[]
+  leads   Lead[]
+}
+
+model GroupMember {
+  id      String @id @default(uuid())
+  groupId String
+  userId  String
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@index([userId])
+}
+
+model User {
+  id           String  @id @default(uuid())
+  // ── system columns ───────────────────────────────────────────────
+  fullName     String
+  email        String  @unique
+  passwordHash String
+  phone        String?
+  roleId       String
+  departmentId String?
+  /// multi-select — a user may speak several
+  languages    String[] @default([])
+  isActive     Boolean  @default(true)
+
+  // ── everything Admin-created ─────────────────────────────────────
+  custom Json @default("{}")
+
+  reportingManagerId String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  role             Role          @relation(fields: [roleId], references: [id])
+  department       Department?   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  reportingManager User?         @relation("Reports", fields: [reportingManagerId], references: [id], onDelete: SetNull)
+  reports          User[]        @relation("Reports")
+  groups           GroupMember[]
+
+  ownedLeads     Lead[]        @relation("LeadOwner")
+  closedDeals    Deal[]        @relation("DealClosedBy")
+  ownedDeals     Deal[]        @relation("DealOwner")
+  ownedRecords   Record[]      @relation("RecordOwner")
+  auditLogs      AuditLog[]
+  activityLogs   ActivityLog[]
+  savedViews     SavedView[]
+  imports        ImportBatch[]
+  refreshTokens  RefreshToken[]
+  configChanges  ConfigChangeLog[]
+
+  @@index([roleId, isActive])
+  @@index([departmentId])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CORE RECORDS — real tables. System columns + custom JSONB.
+// ═══════════════════════════════════════════════════════════════════
+
+model Campaign {
+  id        String   @id @default(uuid())
+  name      String
+  platform  String
+  details   String?
+  spend     Decimal? @db.Decimal(14, 2)
+  isActive  Boolean  @default(true)
+  isDeleted Boolean  @default(false)
+  custom    Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  leads Lead[]
+  deals Deal[]
+
+  @@unique([name, platform])
+  @@index([platform, isActive])
+}
+
+model Lead {
+  id String @id @default(uuid())
+
+  // ── system columns ───────────────────────────────────────────────
+  fullName      String
+  /// normalised E.164 — the primary matching key for webhooks and dedupe
+  phone         String
+  altPhone      String?
+  whatsapp      String?
+  email         String?
+  /// drives assignment and ARK matching
+  language      String
+  /// immutable once set
+  source        LeadSource
+  statusId      String
+  /// NEVER null. Nothing is ever unassigned.
+  ownerId       String
+  groupId       String?
+  campaignId    String?
+  referralCode  String?
+  /// auto-filled by the ARK webhook
+  arkAccountNo  String?
+  lastContacted DateTime?
+
+  // ── everything Admin-created ─────────────────────────────────────
+  custom Json @default("{}")
+
+  isDeleted     Boolean  @default(false)
+  createdById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  status   Status    @relation(fields: [statusId], references: [id])
+  owner    User      @relation("LeadOwner", fields: [ownerId], references: [id])
+  group    Group?    @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  deal     Deal?
+
+  duplicatesAsPrimary   DuplicateFlag[] @relation("DupPrimary")
+  duplicatesAsCandidate DuplicateFlag[] @relation("DupCandidate")
+
+  @@index([ownerId, statusId])
+  @@index([phone])
+  @@index([language, groupId])
+  @@index([source, createdAt])
+  @@index([campaignId])
+}
+
+model Deal {
+  id String @id @default(uuid())
+
+  // ── system columns ───────────────────────────────────────────────
+  /// permanent link to the originating lead. Deal inherits its timeline.
+  leadId       String  @unique
+  arkAccountNo String
+  /// the telesales agent who owned the lead at conversion. IMMUTABLE.
+  /// This is what performance and commission reports count.
+  closedById   String
+  /// who handles the customer now. Transferable, never null.
+  ownerId      String
+  statusId     String
+  language     String
+  campaignId   String?
+
+  ftdAmount      Decimal? @db.Decimal(14, 2)
+  ftdDate        DateTime?
+  /// always derived from Deposit rows, never typed by hand
+  totalDeposited Decimal  @default(0) @db.Decimal(14, 2)
+  depositCount   Int      @default(0)
+
+  // ── everything Admin-created ─────────────────────────────────────
+  custom Json @default("{}")
+
+  isDeleted Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lead     Lead      @relation(fields: [leadId], references: [id])
+  status   Status    @relation(fields: [statusId], references: [id])
+  closedBy User      @relation("DealClosedBy", fields: [closedById], references: [id])
+  owner    User      @relation("DealOwner", fields: [ownerId], references: [id])
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  deposits Deposit[]
+
+  @@index([ownerId, statusId])
+  @@index([closedById])
+  @@index([arkAccountNo])
+  @@index([ftdDate])
+}
+
+/// One row per deposit — the FTD and every re-deposit.
+/// Deal totals are ALWAYS derived from these rows.
+model Deposit {
+  id             String   @id @default(uuid())
+  dealId         String
+  amount         Decimal  @db.Decimal(14, 2)
+  depositedAt    DateTime
+  /// links back to the raw webhook payload that produced this row
+  webhookEventId String?
+  isFtd          Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  deal         Deal          @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  webhookEvent WebhookEvent? @relation(fields: [webhookEventId], references: [id], onDelete: SetNull)
+
+  @@index([dealId, depositedAt])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// GENERIC RECORDS — Admin-created modules. No DDL required, ever.
+// ═══════════════════════════════════════════════════════════════════
+
+model Record {
+  id       String @id @default(uuid())
+  moduleId String
+
+  // ── promoted generic slots the config maps onto ──────────────────
+  name     String?
+  email    String?
+  phone    String?
+  language String?
+  ownerId  String?
+  statusId String?
+  amount   Decimal? @db.Decimal(14, 2)
+
+  data Json @default("{}")
+
+  parentRecordId String?
+  isDeleted      Boolean  @default(false)
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  module ModuleDefinition @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  owner  User?            @relation("RecordOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  parent Record?          @relation("RecordTree", fields: [parentRecordId], references: [id], onDelete: SetNull)
+  children Record[]       @relation("RecordTree")
+
+  @@index([moduleId, ownerId, statusId])
+  @@index([moduleId, phone])
+  @@index([moduleId, isDeleted, createdAt])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// INGESTION
+// ═══════════════════════════════════════════════════════════════════
+
+/// Admin-created lead source. Integrately posts campaign leads here;
+/// ARK Terminal posts direct to its own source.
+model WebhookSource {
+  id            String   @id @default(uuid())
+  name          String
+  slug          String   @unique
+  tokenHash     String
+  moduleId      String
+  /// { incomingKey: fieldKey } — editable in the UI, no deploy needed
+  fieldMapping  Json     @default("{}")
+  defaultValues Json?
+  isActive      Boolean  @default(true)
+  /// last payload received, so the Admin can map against real keys
+  lastPayload   Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  module ModuleDefinition @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  events WebhookEvent[]
+}
+
+/// Raw payload of EVERY inbound call, stored before any processing.
+/// No lead or account event is ever lost; any event is replayable.
+model WebhookEvent {
+  id           String        @id @default(uuid())
+  sourceId     String?
+  raw          Json
+  status       WebhookStatus @default(RECEIVED)
+  error        String?
+  /// what it produced, if anything
+  leadId       String?
+  dealId       String?
+  processedAt  DateTime?
+  replayCount  Int           @default(0)
+  createdAt    DateTime      @default(now())
+
+  source   WebhookSource? @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  deposits Deposit[]
+
+  @@index([status, createdAt])
+  @@index([sourceId, createdAt])
+}
+
+/// Flagged for review — never blocked, never auto-merged.
+model DuplicateFlag {
+  id             String          @id @default(uuid())
+  moduleSlug     String
+  primaryLeadId  String
+  candidateLeadId String
+  /// what matched: phone | name_language
+  matchReason    String
+  confidence     String
+  status         DuplicateStatus @default(PENDING)
+  resolvedById   String?
+  resolvedAt     DateTime?
+  createdAt      DateTime        @default(now())
+
+  primaryLead   Lead @relation("DupPrimary", fields: [primaryLeadId], references: [id], onDelete: Cascade)
+  candidateLead Lead @relation("DupCandidate", fields: [candidateLeadId], references: [id], onDelete: Cascade)
+
+  @@unique([primaryLeadId, candidateLeadId])
+  @@index([status, createdAt])
+}
+
+/// Round-robin cursor. Key is "moduleSlug:groupId" or "senior:language".
+model AssignmentState {
+  key                String   @id
+  lastAssignedUserId String?
+  updatedAt          DateTime @updatedAt
+}
+
+model ImportBatch {
+  id          String   @id @default(uuid())
+  userId      String
+  moduleId    String
+  filename    String
+  /// column → field mapping, reusable as a preset
+  mapping     Json
+  /// ADD_NEW | UPDATE_ONLY | BOTH
+  action      String
+  /// LEAD_ID | EMAIL | PHONE | MOBILE | NONE
+  dedupeKey   String
+  total       Int      @default(0)
+  succeeded   Int      @default(0)
+  failed      Int      @default(0)
+  status      String   @default("PENDING")
+  errorReport Json?
+  createdAt   DateTime @default(now())
+
+  user   User             @relation(fields: [userId], references: [id])
+  module ModuleDefinition @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// VIEWS
+// ═══════════════════════════════════════════════════════════════════
+
+model SavedView {
+  id        String   @id @default(uuid())
+  moduleId  String
+  name      String
+  /// null = shared/system view
+  ownerId   String?
+  /// [{ fieldId, width, pinned, order }]
+  columns   Json
+  /// AND/OR filter tree
+  filters   Json?
+  sort      Json?
+  isShared  Boolean  @default(false)
+  isDefault Boolean  @default(false)
+  /// default view for this role
+  roleId    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  module ModuleDefinition @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  owner  User?            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  role   Role?            @relation(fields: [roleId], references: [id], onDelete: SetNull)
+
+  @@index([moduleId, ownerId])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// LOGGING — four layers. Timelines ARE the audit log.
+// ═══════════════════════════════════════════════════════════════════
+
+/// Layer A. Append-only. Never updated, never deleted.
+/// This log IS the timeline rendered on every record.
+model AuditLog {
+  id         String      @id @default(uuid())
+  entityType String
+  entityId   String
+  action     AuditAction
+  actorType  ActorType   @default(USER)
+  actorId    String?
+  /// { field: { from, to } }
+  changes    Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime    @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+}
+
+/// Layer B. Business events per user.
+model ActivityLog {
+  id         String   @id @default(uuid())
+  actorId    String
+  type       String
+  entityType String?
+  entityId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  actor User @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([actorId, createdAt])
+}
+
+/// Layer C. Every click. ~3.6M rows/month.
+/// PARTITION BY RANGE (serverTs) — see packages/db/prisma/migrations/partitions.sql
+/// Written ONLY via batched inserts from the worker. Never one row per request.
+model InteractionLog {
+  id         BigInt   @id @default(autoincrement())
+  userId     String
+  sessionId  String
+  /// click | view | search | filter | sort | export | error
+  eventType  String
+  /// stable data-track id, e.g. "leads.list.row.open"
+  target     String
+  route      String
+  entityType String?
+  entityId   String?
+  metadata   Json?
+  clientTs   DateTime
+  serverTs   DateTime @default(now())
+
+  @@index([userId, serverTs])
+  @@index([target, serverTs])
+}
+
+/// Layer D. Every configuration change, with before/after and one-click undo.
+model ConfigChangeLog {
+  id         String   @id @default(uuid())
+  actorId    String
+  configType String
+  configId   String
+  action     String
+  before     Json?
+  after      Json?
+  isReverted Boolean  @default(false)
+  revertedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  actor User @relation(fields: [actorId], references: [id])
+
+  @@index([configType, configId, createdAt])
+  @@index([actorId, createdAt])
+}

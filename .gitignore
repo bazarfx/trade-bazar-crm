@@ -1,0 +1,9 @@
+node_modules/
+.next/
+dist/
+.env*
+!.env.example
+*.tsbuildinfo
+.DS_Store
+/tools/figma/out/
+.backups/
