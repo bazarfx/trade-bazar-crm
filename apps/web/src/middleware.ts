@@ -39,10 +39,18 @@ export async function middleware(req: NextRequest) {
 export const config = {
   matcher: [
     /*
-     * Everything except:
-     *  - /api/auth/*  (login and refresh must be reachable without a session)
+     * Page routes only. Everything except:
+     *  - /api/**  — see below
      *  - Next internals and static assets
+     *
+     * API routes are deliberately EXCLUDED. Redirecting them would answer a
+     * fetch() with a 307 to /login, which fetch follows to a 200 HTML page —
+     * so the caller sees a successful response containing no JSON instead of
+     * a 401, and cannot tell an expired session from a server fault. Worse,
+     * a 307 preserves the method, so an expired POST would be replayed
+     * against /login. Every route under /api asserts its own principal via
+     * guarded(), which returns a real 401, so nothing is left unprotected.
      */
-    '/((?!api/auth|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
+    '/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
   ],
 };
