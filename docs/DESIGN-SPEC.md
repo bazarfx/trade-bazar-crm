@@ -144,3 +144,77 @@ import) and only at desktop 1440. Everything else — the field builder, layout
 editor, status manager, settings — has no design and composes from the
 primitives above. Overflow, virtualisation and the sticky section navigator
 follow the rules in `CLAUDE.md`, not the file.
+
+---
+
+# The other five screens
+
+All measured from the file the same way. Each names the engine it depends on —
+several are UI over machinery that does not exist yet, and building the chrome
+without it produces a screen that lies.
+
+## Screen: Create Leads (1440×1024)
+
+A full-screen form over the canvas. This is the record create/edit form for
+EVERY module — Leads is the module whose `FormSection` + `FieldDefinition`
+rows it renders.
+
+- Title "Create {Module}"
+- **Numbered sticky section navigator**, left: `1. Lead Information`,
+  `2. Personal Information`, `3. ARK Information`. These are exactly the three
+  seeded `FormSection` rows — the navigator is generated, never a list in code.
+  This is the "sticky section navigator, never a squeezed grid" rule in
+  `CLAUDE.md` made visible.
+- Field rows carry: label, help text under the label, placeholder (`Enter...`,
+  `Write here...`, `DD/MM/YYYY` on dates), and a `0/50` character counter where
+  a max length applies.
+- Section separators are full-width 1px lines `#e5e7eb`.
+- Footer actions: **Save** (primary), **Save as New**, **Cancel**, plus an
+  "All changes Saved" status line.
+
+Depends on: field engine ✅, layout engine ✅, record engine ⬜ (create path).
+
+## Screens: Sort, Filter by Leads, Saved Filters
+
+Three states of the same list screen, not separate pages:
+
+- **Filter rail** (left, 230): the three groups already built — System Defined
+  Filters, Filter By fields, Filter By Related Modules.
+- **Filter / Sort** toolbar buttons open their panels over the list.
+- The saved-filter state shows the view selector ("All Leads") driving the
+  column set and filter tree.
+- Table chrome, pagination and the `Show N Rows` selector are identical across
+  all three — only the panel above the table changes.
+
+Column set in the file: `Locked · Notes · Country · Latest Email Status ·
+Deals · Amount · Untouched Records · Tasks · Current Platform · Lead Name ·
+Email · Phone · Lead Status · Gender · Lead Category · Language · Department ·
+ARK Account Number · Location`. Seed data via `SavedView`, never code.
+
+Depends on: operator registry ✅, filter compiler ✅ (`packages/core`),
+`SavedView` model ✅, filter TREE builder UI ⬜, record engine ⬜ (to filter
+anything).
+
+## Screen: Import — a five-stage wizard
+
+25 frames, which are states of five stages. The stage header reads, verbatim
+from the file (typo included): `Upload · Actions · Module-File Mapping ·
+Fileld Mapping · Assign`.
+
+| Stage | Contents in the file |
+|---|---|
+| 1 Upload | Drag & drop target ("Drag & Drop the files here"), file list, **Charset** selector |
+| 2 Actions | "How should the records in this field be processed" — add new / update only / both |
+| 3 Module-File Mapping | Tabs: All Modules · Mapped Modules · UnMapped Modules · Unsupported Files; counts like "Unmapped Files (9)", "1 File" |
+| 4 Field Mapping | Tabs: All Columns · Mapped Columns · Unmapped Columns; **Auto Map**; "Columns in Fields" |
+| 5 Assign | **Assignment Rules**, "Choose Assignment Rules", "Assign Owner based on Assignment Rules" |
+
+Footer throughout: `Previous · Next · Cancel`.
+
+Depends on: record engine ⬜, `ImportBatch` model ✅, worker import job ⬜,
+**assignment engine ⬜ (stage 5 is meaningless without it)**.
+
+⚠️ The gap analysis costed this at 2 days versus ~3 hours for plain CSV
+import. It is the single largest screen in the file and the one most coupled
+to unbuilt engines. Build it after the record and assignment engines, not
+before — a wizard whose last stage cannot assign is a wizard that cannot run.
