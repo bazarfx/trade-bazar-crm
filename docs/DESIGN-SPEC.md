@@ -176,15 +176,53 @@ Depends on: field engine ✅, layout engine ✅, record engine ⬜ (create path)
 
 ## Screens: Sort, Filter by Leads, Saved Filters
 
-Three states of the same list screen, not separate pages:
+Three states of the same list screen, not separate pages. Ten frames in the
+filter section, four in the sort section, all sharing one chrome — only the
+rail and the panel above the table change.
 
-- **Filter rail** (left, 230): the three groups already built — System Defined
-  Filters, Filter By fields, Filter By Related Modules.
-- **Filter / Sort** toolbar buttons open their panels over the list.
-- The saved-filter state shows the view selector ("All Leads") driving the
-  column set and filter tree.
-- Table chrome, pagination and the `Show N Rows` selector are identical across
-  all three — only the panel above the table changes.
+### Sort
+
+A small dropdown, 132×56, radius 6, `bg #ffffff`, border `#e5e7eb`. Two rows
+of 28px, 10px Regular text: **Descending** (`#6b7280`) and **Ascending**
+(`#111827`, selected, `bg #f6f8fa`). Rows carry the bottom corner radius only.
+Opens from the `Sort` toolbar button.
+
+### The filter rail — three groups
+
+**System Defined Filters** — computed, not module fields. From the file:
+`Activities · Cadences · Campaigns · Latest Email Status · Locked ·
+Record Action · Related Record Action · Touched Records · Untouched Records`,
+plus an **Age in [N] Days** row with a numeric input.
+
+⚠️ These are engine concepts, not `FieldDefinition` rows. They cannot be
+generated from a module's fields and must not be faked as such — several
+depend on the activity log and the campaign link. Ship the group only when the
+filter engine can answer them; an inert checkbox that silently matches nothing
+is worse than an absent one.
+
+**Filter By fields** — one row per filterable field of the module, generated
+from `FieldDefinition`. The operator set comes from the field's type via
+`FIELD_TYPE_SPECS[type].operators` — never configured by hand, never a
+per-field list in code.
+
+**Filter By Related Modules** — `Accounts (Connected Records)`,
+`Archives (Connected Records)`, `Products (Connected Records)`,
+`Solutions (Connected Records)`, `Quotes (Connected Records)`, plus
+`Meetings · Tasks · Emails · Connected To`. Generated from modules that link to
+this one; the file's list is Zoho's module set, not ours.
+
+### Actions and saved views
+
+Footer of the rail: **Clear** and **Apply Filter**. Once a filter is applied a
+**Save Filter** action appears, and naming it uses an **Add Name** input. Saved
+views then surface as a fourth rail group, **Saved Filters (9)** with a live
+count — matching spec §10's "saved views with live match counts".
+
+Persisted in `SavedView` (columns + filters + sort, private or shared, and a
+per-role default). The filter tree is `FilterNode` from `packages/shared` and
+compiles through `packages/core/engines/filter-compiler.ts` — parameterised,
+never string-concatenated, and an unknown field key throws rather than
+silently widening the result set.
 
 Column set in the file: `Locked · Notes · Country · Latest Email Status ·
 Deals · Amount · Untouched Records · Tasks · Current Platform · Lead Name ·
