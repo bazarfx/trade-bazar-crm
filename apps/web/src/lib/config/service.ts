@@ -39,8 +39,19 @@ const REQUIRED_SPECIAL: Record<ConfigType, SpecialPermission> = {
   MODULE: 'MANAGE_FIELDS_LAYOUTS',
 };
 
-export function assertConfigPermission(principal: Principal, configType: ConfigType): void {
-  const special = REQUIRED_SPECIAL[configType];
+/**
+ * `special` overrides the configType -> special mapping for the rare write
+ * whose config type does not imply its permission. CONFIG_TYPES is a fixed
+ * union, so a role's permission matrix logs as MODULE — but it is a user
+ * administration write, not a field/layout one. Defaulting it to
+ * MANAGE_FIELDS_LAYOUTS would both lock a delegated user administrator out of
+ * their own screen and hand permission editing to anyone who can move a field.
+ */
+export function assertConfigPermission(
+  principal: Principal,
+  configType: ConfigType,
+  special: SpecialPermission = REQUIRED_SPECIAL[configType],
+): void {
   const allowed = principal.actor.isAdmin || principal.permissions.specials.has(special);
   if (!allowed) {
     throw new ConfigError(`Requires the "${special}" permission`, 403, 'FORBIDDEN');
@@ -53,6 +64,9 @@ export interface ConfigChangeSpec<T> {
   principal: Principal;
   configType: ConfigType;
   action: ConfigAction;
+  /** Override the configType -> special mapping. See assertConfigPermission.
+   *  The assertion still happens HERE, so the route cannot forget it. */
+  special?: SpecialPermission;
   /**
    * Interactive-transaction budget. Prisma's defaults (5s timeout, 2s maxWait)
    * are sized for a single-row write; a status reassignment touches every
@@ -76,7 +90,7 @@ export interface ConfigChangeResult<T> {
 }
 
 export async function applyConfigChange<T>(spec: ConfigChangeSpec<T>): Promise<ConfigChangeResult<T>> {
-  assertConfigPermission(spec.principal, spec.configType);
+  assertConfigPermission(spec.principal, spec.configType, spec.special);
 
   return prisma.$transaction(
     async (tx) => {

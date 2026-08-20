@@ -4,6 +4,7 @@ import { prisma } from '@crm/db';
 import { PermissionEngine } from '@crm/core';
 import { operatorsFor, type FieldType } from '@crm/shared';
 import { getPrincipal } from '@/lib/auth/session';
+import { canReadModuleConfig } from '@/lib/config/access';
 import { listRecords } from '@/lib/records/list';
 import { Panel, PanelBody, type DataTableColumn } from '@/components/ui';
 import { FilterPanel } from './_components/filter-panel';
@@ -90,6 +91,20 @@ export default async function ModulePage({
   // depend on a layout having run — layouts and pages render independently.
   const principal = await getPrincipal();
   if (!principal) redirect('/login');
+
+  // Fail closed BEFORE the module is resolved. `/api/modules/<slug>/fields`
+  // already refuses a module this actor has no view scope on (lib/config/
+  // access.ts) because configuration describes the data — but this page was
+  // reading the same FieldDefinition, Status and SavedView rows and rendering
+  // them as column headers, status chips and filter labels. The scope filter
+  // correctly returned zero ROWS, which made the leak easy to miss: the
+  // records were hidden while every field label and status name was not, and
+  // hiding a field in the UI is not a security control.
+  //
+  // notFound() rather than a 403 for the same reason the API asserts before
+  // resolving: to a caller with no access, an unknown module and a forbidden
+  // one must be indistinguishable.
+  if (!canReadModuleConfig(principal, moduleSlug)) notFound();
 
   const mod = await prisma.moduleDefinition.findFirst({
     where: { slug: moduleSlug, isEnabled: true },

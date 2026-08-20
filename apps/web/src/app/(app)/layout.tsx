@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 import { prisma } from '@crm/db';
 import { getPrincipal } from '@/lib/auth/session';
+import { canReadModuleConfig } from '@/lib/config/access';
 import { TrackListener } from '@/components/track-listener';
 import { OverlayProvider } from '@/components/overlay/overlay-context';
 import { Sidebar, type ShellNavGroup } from '@/components/shell/sidebar';
@@ -27,23 +28,33 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     select: { slug: true, label: true, labelPlural: true, icon: true, navOrder: true },
   });
 
-  // Settings is gated on capability flags, never on a role name.
+  // Settings is gated on capability flags, never on a role name. Every
+  // special that has a door behind /settings belongs in this list — the
+  // landing page draws only the doors the holder may use, so someone who
+  // administers roles but configures no module still needs the nav item.
   const canConfigure =
     actor.isAdmin ||
     permissions.specials.has('MANAGE_FIELDS_LAYOUTS') ||
-    permissions.specials.has('MANAGE_STATUSES');
+    permissions.specials.has('MANAGE_STATUSES') ||
+    permissions.specials.has('MANAGE_USERS_ROLES');
 
   const groups: ShellNavGroup[] = [
     {
       id: 'main',
       heading: 'Main',
-      items: modules.map((m) => ({
-        trackKey: m.slug,
-        href: `/${m.slug}`,
-        match: `/${m.slug}`,
-        label: m.labelPlural,
-        icon: m.icon,
-      })),
+      // Only modules this actor may actually open. The same gate the module
+      // page and the config API use, so the nav cannot advertise a door that
+      // answers 404 — and a module's very existence and label stay inside the
+      // permission boundary rather than being enumerable by anyone signed in.
+      items: modules
+        .filter((m) => canReadModuleConfig(principal, m.slug))
+        .map((m) => ({
+          trackKey: m.slug,
+          href: `/${m.slug}`,
+          match: `/${m.slug}`,
+          label: m.labelPlural,
+          icon: m.icon,
+        })),
     },
   ];
 

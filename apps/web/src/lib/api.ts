@@ -8,7 +8,7 @@
  */
 import 'server-only';
 import { NextResponse } from 'next/server';
-import { ZodError, type ZodType } from 'zod';
+import { ZodError, type TypeOf, type ZodTypeAny } from 'zod';
 import type { ApiError } from '@crm/shared';
 import { getPrincipal } from '@/lib/auth/session';
 import type { Principal } from '@/lib/auth/actor';
@@ -48,8 +48,16 @@ export function fail(status: number, error: string): Response {
   return NextResponse.json({ error } satisfies ApiError, { status });
 }
 
-/** Parse a JSON body against a schema; throws ZodError into guarded(). */
-export async function parseBody<T>(req: Request, schema: ZodType<T>): Promise<T> {
+/**
+ * Parse a JSON body against a schema; throws ZodError into guarded().
+ *
+ * Generic over the SCHEMA, not over one type: `ZodType<T>` fixes input and
+ * output to the same T, so a schema carrying a `.default()` inferred its INPUT
+ * shape and the handler received a value whose defaults were typed as possibly
+ * undefined — even though the parser had just filled them in. `TypeOf<S>` is
+ * the parsed shape, which is what every caller actually holds.
+ */
+export async function parseBody<S extends ZodTypeAny>(req: Request, schema: S): Promise<TypeOf<S>> {
   let raw: unknown;
   try {
     raw = await req.json();

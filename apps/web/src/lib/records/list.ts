@@ -1,11 +1,15 @@
 /**
- * The list repository for the generic module screen.
+ * The scoped list repository.
  *
  * This is THE ONE FILE above `StorageResolver` that is allowed to know a core
  * module is a real table and an Admin-created module is a row in `records`.
  * Everything above it — the page, the toolbar, the table, the cells — receives
  * a flat, field-keyed row and cannot tell the two apart. If a component ever
  * branches on a module slug, that branch is a bug.
+ *
+ * It is also where `scopeFilter` is applied. That belongs in the repository and
+ * nowhere else: a controller can be forgotten, and every list in the product
+ * comes through this one call.
  *
  * TODO(record engine): fold `DELEGATE_SHAPES` into `StorageResolver` and
  * delete this file's knowledge of it. The resolver already owns the delegate,
@@ -16,11 +20,9 @@
 import 'server-only';
 import { prisma } from '@crm/db';
 import { StorageResolver, type FieldMeta, type PermissionEngine } from '@crm/core';
+import { serialiseMany, type RecordRow } from '@/lib/records/serialise';
 
-/** A row as the screen sees it: flat, field-keyed and JSON-safe. */
-export interface RecordRow extends Record<string, unknown> {
-  id: string;
-}
+export type { RecordRow };
 
 export interface ListResult {
   rows: RecordRow[];
@@ -44,36 +46,122 @@ interface ListDelegate {
 }
 
 /**
+ * How one ownership key from `scopeFilter` is expressed against a given table.
+ * Returning null means "this table cannot answer that question" — the caller
+ * then denies everything rather than dropping the condition.
+ */
+type ScopeExpression = (value: unknown) => Record<string, unknown> | null;
+
+/**
  * What each table physically carries. The core tables are deliberately not
  * uniform — users are deactivated rather than deleted, deposits are immutable
  * ledger rows with neither a delete path nor a JSONB container — and asking
  * Prisma for a column a table does not have throws at query time rather than
  * quietly returning nothing. So this is stated, never assumed.
+ *
+ * Keyed by PRISMA MODEL, not by module slug: which table a module lives in is
+ * a storage fact `StorageResolver` owns, and slugs are Admin-editable data.
  */
 interface DelegateShape {
   /** column marking a row soft-deleted; null = this table has no delete path */
   softDeleteColumn: string | null;
   /** false = no `custom` / `data` JSONB container on this table */
   hasJsonContainer: boolean;
-  /** where-keys `scopeFilter` may legally use against this table */
-  scopeKeys: readonly string[];
+  /**
+   * How this table expresses each ownership key `scopeFilter` can emit.
+   * A key with no entry here is inexpressible on this table -> deny all.
+   */
+  scope: Record<string, ScopeExpression>;
 }
 
-/** The generic table's shape, and the fallback for any delegate not listed. */
+/**
+ * The DEPARTMENT scope arrives as `{ owner: { departmentId } }`. Pull the id
+ * back out so each table can re-express it against its own columns.
+ *
+ * A null department means the actor belongs to no department, and DEPARTMENT
+ * scope then covers nothing. Passing the null through would instead match every
+ * row whose owner is ALSO departmentless — a widening, so it denies.
+ */
+function departmentOf(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const id = (value as { departmentId?: unknown }).departmentId;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
+/** Tables carrying a real `ownerId` column and an `owner` relation to User. */
+const OWNER_COLUMN_SCOPE: Record<string, ScopeExpression> = {
+  ownerId: (v) => ({ ownerId: v }),
+  owner: (v) => {
+    const departmentId = departmentOf(v);
+    return departmentId ? { owner: { departmentId } } : null;
+  },
+};
+
+/**
+ * Which table can express which scope. Anything missing DENIES — spelled out
+ * per table because a silently dropped condition is a permission leak:
+ *
+ *   lead      OWN ✓ ownerId · GROUP ✓ groupId · DEPARTMENT ✓ owner relation
+ *   deal      OWN ✓ ownerId · GROUP ✗ NO groupId COLUMN · DEPARTMENT ✓
+ *   campaign  ✗ NO OWNERSHIP COLUMNS AT ALL — a campaign has no owner, no
+ *             group and no department, so anything but ALL sees nothing
+ *   user      ✗ no ownerId and no groupId column. A user is not owned: OWN is
+ *             the actor's own row, GROUP is the GroupMember join table, and
+ *             DEPARTMENT is the row's OWN departmentId, not an owner's
+ *   deposit   ✗ no ownership columns. A deposit belongs to whoever owns its
+ *             deal, one hop away — so OWN and DEPARTMENT resolve through
+ *             `deal`, and GROUP denies because Deal has no groupId either
+ *   record    OWN ✓ ownerId · GROUP ✗ THE GENERIC TABLE HAS NO groupId COLUMN
+ *             (promoted slots are name/email/phone/language/owner/status/amount)
+ *             · DEPARTMENT ✓ owner relation
+ *
+ * The two ✗ GROUP rows are the ones to watch: a role given GROUP scope on
+ * Deals or on an Admin-created module sees NOTHING there, deliberately, until
+ * those tables carry a group. That is the fail-closed answer, and it is loud —
+ * an empty list gets reported; a leak does not.
+ */
 const GENERIC_SHAPE: DelegateShape = {
   softDeleteColumn: 'isDeleted',
   hasJsonContainer: true,
-  scopeKeys: ['ownerId', 'owner'],
+  scope: OWNER_COLUMN_SCOPE,
 };
 
 const DELEGATE_SHAPES: Record<string, DelegateShape> = {
-  lead: { softDeleteColumn: 'isDeleted', hasJsonContainer: true, scopeKeys: ['ownerId', 'groupId', 'owner'] },
-  deal: { softDeleteColumn: 'isDeleted', hasJsonContainer: true, scopeKeys: ['ownerId', 'owner'] },
-  campaign: { softDeleteColumn: 'isDeleted', hasJsonContainer: true, scopeKeys: [] },
+  lead: {
+    softDeleteColumn: 'isDeleted',
+    hasJsonContainer: true,
+    scope: { ...OWNER_COLUMN_SCOPE, groupId: (v) => ({ groupId: v }) },
+  },
+  deal: { softDeleteColumn: 'isDeleted', hasJsonContainer: true, scope: OWNER_COLUMN_SCOPE },
+  campaign: { softDeleteColumn: 'isDeleted', hasJsonContainer: true, scope: {} },
   // Users are deactivated, never row-deleted: `isActive` is a state the list
   // still has to show, so there is nothing to filter out here.
-  user: { softDeleteColumn: null, hasJsonContainer: true, scopeKeys: [] },
-  deposit: { softDeleteColumn: null, hasJsonContainer: false, scopeKeys: [] },
+  user: {
+    softDeleteColumn: null,
+    hasJsonContainer: true,
+    scope: {
+      // OWN on the Profile module is the actor's own row — a user's identity
+      // IS its ownership. Without this, a role scoped OWN on users could not
+      // see itself, which is the one row that scope is for.
+      ownerId: (v) => ({ id: v }),
+      groupId: (v) => ({ groups: { some: { groupId: v } } }),
+      owner: (v) => {
+        const departmentId = departmentOf(v);
+        return departmentId ? { departmentId } : null;
+      },
+    },
+  },
+  deposit: {
+    softDeleteColumn: null,
+    hasJsonContainer: false,
+    scope: {
+      ownerId: (v) => ({ deal: { ownerId: v } }),
+      owner: (v) => {
+        const departmentId = departmentOf(v);
+        return departmentId ? { deal: { owner: { departmentId } } } : null;
+      },
+    },
+  },
   record: GENERIC_SHAPE,
 };
 
@@ -81,56 +169,50 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
 const DENY_ALL: Record<string, unknown> = { id: { in: [] as string[] } };
 
 /**
- * Narrow the actor's scope filter to what this table can actually express.
+ * Translate the actor's scope filter into what THIS table can express.
  *
- * `scopeFilter` speaks ownership — `ownerId`, `groupId`, `owner.departmentId`
- * — and not every module's storage carries those columns. Passing one through
- * to a table that lacks it throws; DROPPING it would widen the result set past
- * the actor's scope, which is exactly the leak the fail-closed rule exists to
- * prevent. So an inexpressible scope denies everything instead.
+ * `scopeFilter` speaks one ownership vocabulary — `ownerId`, `groupId`,
+ * `owner.departmentId` — and not every table carries those columns under those
+ * names. Passing a key through to a table that lacks it throws; DROPPING it
+ * would widen the result set past the actor's scope, which is exactly the leak
+ * the fail-closed rule exists to prevent. So a scope this table cannot express
+ * denies everything instead.
  */
 function scopeWhere(shape: DelegateShape, scope: Record<string, unknown>): Record<string, unknown> {
-  const keys = Object.keys(scope);
+  const entries = Object.entries(scope);
   // `{}` is ALL or Admin — the engine's only "no restriction" answer.
-  if (keys.length === 0) return {};
-  // `id` is how the engine itself says "see nothing"; every table has it.
-  if (keys.every((k) => k === 'id' || shape.scopeKeys.includes(k))) return scope;
-  return DENY_ALL;
-}
+  if (entries.length === 0) return {};
 
-/**
- * React hands these rows to a client component, and the RSC serialiser refuses
- * anything that is not a plain value — a Prisma `Decimal` is a class instance
- * and throws on the boundary. Dates leave as ISO strings rather than `Date`s so
- * the cell formats them identically on both sides of a hydration; a money value
- * leaves as its exact digits, because a `Number()` round-trip loses precision.
- */
-function plain(value: unknown): unknown {
-  if (value === null || value === undefined) return null;
-  if (value instanceof Date) return value.toISOString();
-  if (Array.isArray(value)) return value.map(plain);
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of entries) {
+    // `id` is how the engine itself says "see nothing"; every table has it.
+    if (key === 'id') {
+      out['id'] = value;
+      continue;
+    }
 
-  const kind = typeof value;
-  if (kind === 'string' || kind === 'number' || kind === 'boolean') return value;
-  if (kind === 'bigint') return String(value);
-  if (kind !== 'object') return null;
+    const express = shape.scope[key];
+    if (!express) return DENY_ALL;
+    const fragment = express(value);
+    if (!fragment) return DENY_ALL;
 
-  const proto = Object.getPrototypeOf(value);
-  if (proto === Object.prototype || proto === null) {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = plain(v);
-    return out;
+    for (const [k, v] of Object.entries(fragment)) {
+      // Two conditions on one where-key would silently drop one of them, and
+      // the one that survives may be the weaker. Deny rather than guess.
+      if (k in out) return DENY_ALL;
+      out[k] = v;
+    }
   }
-  return String(value);
+  return out;
 }
 
 export interface ListRecordsParams {
   module: { slug: string; isCore: boolean };
   /**
-   * The fields the caller may see, already stripped of hidden ones. Only these
-   * keys are selected and only these keys come back, so a field hidden by the
-   * permission matrix never leaves the server — hiding it in the UI is not a
-   * security control.
+   * The fields to project. Hidden ones are stripped again on serialisation, so
+   * a caller passing its whole field list leaks nothing — but passing only the
+   * columns on screen keeps a 40-field module from selecting 40 columns to
+   * draw 12 of them.
    */
   fields: FieldMeta[];
   engine: PermissionEngine;
@@ -164,6 +246,7 @@ export async function listRecords({
 
   // Explicit select, never the whole row: `users` carries a password hash that
   // has no business being read, let alone travelling to a client component.
+  // `NEVER_SERIALISED` in the serialiser is the second lock on the same door.
   const select: Record<string, boolean> = { id: true };
   if (shape.hasJsonContainer) select[resolver.jsonColumn] = true;
   for (const f of fields) if (f.systemColumn) select[f.systemColumn] = true;
@@ -173,18 +256,15 @@ export async function listRecords({
     delegate.count({ where }),
   ]);
 
-  return {
-    rows: rows.map((row) => {
-      const flat = resolver.flatten(row);
-      const out: Record<string, unknown> = {};
-      for (const f of fields) out[f.key] = plain(flat[f.key]);
-      // `id` is written LAST, from the database row rather than the flattened
-      // one. Nothing stops an Admin creating a field whose key is `id`, and a
-      // row whose identity had been overwritten by a field value would collide
-      // with its neighbours as a React key and open the wrong record.
-      out['id'] = String(row['id'] ?? '');
-      return out as RecordRow;
-    }),
-    total,
-  };
+  const flattened = rows.map((row) => {
+    const flat = resolver.flatten(row);
+    // The id comes from the DATABASE row, not the flattened one: an Admin can
+    // create a field keyed `id`, and `flatten` would have written its value
+    // over the record's identity. The serialiser reads `row.id` last.
+    flat['id'] = row['id'];
+    return flat;
+  });
+
+  // Serialisation, not the caller, decides what leaves the server.
+  return { rows: serialiseMany(engine, module.slug, flattened, fields), total };
 }
