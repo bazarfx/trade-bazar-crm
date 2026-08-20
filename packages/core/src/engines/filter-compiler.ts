@@ -119,6 +119,57 @@ export interface CompileOptions {
   resolve: (fieldKey: string) => FieldLocation;
   /** injected for testability — never call Date.now() inline */
   now?: Date;
+  /**
+   * The ORM's "this JSON path is absent OR holds a JSON null" sentinel —
+   * `Prisma.AnyNull`. REQUIRED, and deliberately not defaulted.
+   *
+   * A plain `null` here does not mean what it reads as. Postgres distinguishes
+   * a missing JSONB key (`#>` yields SQL NULL) from a stored JSON `null`, and
+   * Prisma exposes that split as DbNull / JsonNull. `equals: null` compiles to
+   * the JsonNull half only, so `isEmpty` on a custom field matched ZERO rows —
+   * every record that simply never had the field set was invisible to the one
+   * filter meant to find them. It is a silent wrong answer, not an error.
+   *
+   * This package must not import Prisma (framework-agnostic, per CLAUDE.md's
+   * layout), so the sentinel is injected. It has no default because a
+   * forgotten default is exactly how the bug came back.
+   */
+  jsonAnyNull: unknown;
+  /**
+   * Is this real column NULLABLE in the database?
+   *
+   * Optional, and "assume nullable" is the safe default because that is what
+   * every previous caller assumed. Supplying it fixes a 500: Prisma refuses
+   * `null` in ANY form — bare, `equals`, or `not` — against a NOT NULL scalar
+   * ("Argument `phone` is missing"), so "is empty" on a required column was a
+   * crashed request rather than an answer. The operator is legal for the type,
+   * the rail offers it, and there is no way for a user to know which columns
+   * are required.
+   */
+  columnIsNullable?: (column: string) => boolean;
+}
+
+/**
+ * The two constant answers, as WHERE objects rather than as `{}` / absent.
+ *
+ * `compileFilter` drops empty children from a group, so a tautology written as
+ * `{}` inside an OR would vanish and quietly narrow the branch. Both of these
+ * are non-empty, parameterised, and true on every table — every model has an
+ * `id`.
+ */
+const MATCH_NONE: PrismaWhere = { id: { in: [] as string[] } };
+const MATCH_ALL: PrismaWhere = { NOT: { id: { in: [] as string[] } } };
+
+/** Does this comparison ask "is (not) null"? The only two an isEmpty produces. */
+function nullTest(cmp: unknown): 'isNull' | 'isNotNull' | null {
+  if (cmp === null) return 'isNull';
+  if (typeof cmp === 'object' && cmp !== null) {
+    const keys = Object.keys(cmp as object);
+    if (keys.length === 1 && keys[0] === 'not' && (cmp as { not: unknown }).not === null) {
+      return 'isNotNull';
+    }
+  }
+  return null;
 }
 
 export function compileFilter(node: FilterNode | undefined, opts: CompileOptions): PrismaWhere {
@@ -138,18 +189,40 @@ export function compileFilter(node: FilterNode | undefined, opts: CompileOptions
   const cmp = comparison(node, now);
 
   // real column → direct comparison, hits the btree index
-  if (loc.column) return { [loc.column]: cmp };
+  if (loc.column) {
+    // A NOT NULL column is never null, so the question has a constant answer
+    // and the database never needs to be asked. Answering it here is not an
+    // optimisation — see `columnIsNullable`, the alternative is a 500.
+    //
+    // Note this reads the column's nullability, NOT `FieldDefinition
+    // .isRequired`: an Admin can clear "required" without a migration, and the
+    // column would still be NOT NULL underneath. Only the database's own
+    // answer is safe to compile against.
+    const test = nullTest(cmp);
+    if (test && opts.columnIsNullable && !opts.columnIsNullable(loc.column)) {
+      return test === 'isNull' ? MATCH_NONE : MATCH_ALL;
+    }
+    return { [loc.column]: cmp };
+  }
 
   // JSONB path. Prisma's JSON filters are narrower than column filters, so we
   // express equality/containment via `path` and fall back to raw-safe forms.
   return {
-    [loc.jsonColumn]: { path: [loc.key], ...(asJsonFilter(cmp)) },
+    [loc.jsonColumn]: { path: [loc.key], ...asJsonFilter(cmp, opts.jsonAnyNull) },
   };
 }
 
-/** Map a column-style comparison onto Prisma's JSON filter vocabulary. */
-function asJsonFilter(cmp: unknown): Record<string, unknown> {
-  if (cmp === null) return { equals: null };
+/**
+ * Map a column-style comparison onto Prisma's JSON filter vocabulary.
+ *
+ * `anyNull` replaces every plain `null` that reaches this layer. On a real
+ * column `null` means "no value" and Postgres agrees; on a JSONB path it means
+ * only "a stored JSON null", which is not the same set — see `jsonAnyNull`.
+ * Substituting it in both the `equals` (isEmpty) and `not` (isNotEmpty) forms
+ * is what keeps the two exact complements of each other.
+ */
+function asJsonFilter(cmp: unknown, anyNull: unknown): Record<string, unknown> {
+  if (cmp === null) return { equals: anyNull };
   if (typeof cmp !== 'object') return { equals: cmp };
 
   const o = cmp as Record<string, unknown>;
@@ -160,7 +233,7 @@ function asJsonFilter(cmp: unknown): Record<string, unknown> {
       case 'startsWith': out['string_starts_with'] = v; break;
       case 'endsWith':   out['string_ends_with'] = v; break;
       case 'in':         out['array_contains'] = v; break;
-      case 'not':        out['not'] = v; break;
+      case 'not':        out['not'] = v === null ? anyNull : v; break;
       default:           out[k] = v;
     }
   }

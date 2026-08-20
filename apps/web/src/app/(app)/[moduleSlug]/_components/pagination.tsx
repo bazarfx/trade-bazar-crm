@@ -14,7 +14,14 @@ export interface PaginationProps {
   /** 1-based. */
   page: number;
   pageCount: number;
-  pageSize: number;
+  /**
+   * Builds the href for a page number. Passed in rather than assembled here:
+   * the rest of the query state — the saved view, the sort, the search term
+   * and the fragment carrying an ad-hoc filter — has to survive a page click,
+   * and a pager that rebuilds the URL from two of those parameters silently
+   * drops the others. One builder, in the screen that owns the state.
+   */
+  hrefFor: (page: number) => string;
 }
 
 /** Page buttons drawn at once. Beyond this the row is wider than the panel. */
@@ -32,12 +39,11 @@ const STEP =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ' +
   'focus-visible:ring-offset-2 focus-visible:ring-offset-surface';
 
-export function Pagination({ slug, page, pageCount, pageSize }: PaginationProps) {
+export function Pagination({ slug, page, pageCount, hrefFor }: PaginationProps) {
   // An empty module still shows page 1 of 1 — a pager that vanishes reads as a
   // broken screen, and this one is telling the truth.
   const total = Math.max(1, pageCount);
   const current = Math.min(Math.max(1, page), total);
-  const href = (n: number) => `?page=${n}&size=${pageSize}`;
 
   return (
     <nav
@@ -46,7 +52,7 @@ export function Pagination({ slug, page, pageCount, pageSize }: PaginationProps)
     >
       <Step
         slug={slug}
-        href={href(current - 1)}
+        href={hrefFor(current - 1)}
         enabled={current > 1}
         label="Previous page"
         icon={<ChevronLeftIcon className="h-4 w-4" />}
@@ -65,7 +71,7 @@ export function Pagination({ slug, page, pageCount, pageSize }: PaginationProps)
           ) : (
             <Link
               key={n}
-              href={href(n)}
+              href={hrefFor(n)}
               data-track={`${slug}.list.page.open`}
               className={`${STEP} min-w-8 px-2 text-heading hover:bg-background`}
             >
@@ -77,7 +83,7 @@ export function Pagination({ slug, page, pageCount, pageSize }: PaginationProps)
 
       <Step
         slug={slug}
-        href={href(current + 1)}
+        href={hrefFor(current + 1)}
         enabled={current < total}
         label="Next page"
         icon={<ChevronRightIcon className="h-4 w-4" />}

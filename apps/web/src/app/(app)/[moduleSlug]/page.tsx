@@ -1,18 +1,19 @@
-import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { prisma } from '@crm/db';
 import { PermissionEngine } from '@crm/core';
-import { operatorsFor, type FieldType } from '@crm/shared';
+import { operatorsFor, type FieldType, type SavedViewDto, type SortSpec } from '@crm/shared';
 import { getPrincipal } from '@/lib/auth/session';
 import { canReadModuleConfig } from '@/lib/config/access';
+import { ConfigError } from '@/lib/config/service';
+import { listViews } from '@/lib/config/views';
 import { listRecords } from '@/lib/records/list';
-import { Panel, PanelBody, type DataTableColumn } from '@/components/ui';
-import { FilterPanel } from './_components/filter-panel';
+import type { DataTableColumn } from '@/components/ui';
 import { ListActions } from './_components/list-actions';
-import { ListToolbar } from './_components/list-toolbar';
-import { Pagination } from './_components/pagination';
-import { RecordTable } from './_components/record-table';
+import { ListScreen } from './_components/list-screen';
+import { NO_VIEW, parseListQuery, type ListQueryLimits } from './_components/list-query';
 import { SearchBox } from './_components/search-box';
+import type { FilterField } from './_components/filter-panel';
+import type { PickerOption } from './_components/filter-condition-row';
 
 /**
  * THE module list screen. One page serves /leads, /deals and every module an
@@ -20,21 +21,27 @@ import { SearchBox } from './_components/search-box';
  * column list anywhere in this app.
  *
  * Everything on screen is read from config at request time: the title from
- * `ModuleDefinition`, the columns from `FieldDefinition`, the chips from
- * `Status`, the views from `SavedView`, the rows from whichever table the
- * storage resolver decides this module lives in. The designed Leads screen is
- * simply what this renders when the Leads module's config drives it.
+ * `ModuleDefinition`, the columns from `FieldDefinition` or the applied
+ * `SavedView`, the chips from `Status`, the filter rows from the field types'
+ * operator registry, the rows from whichever table the storage resolver
+ * decides this module lives in. The designed Leads screen is simply what this
+ * renders when the Leads module's config drives it.
  */
 
 /**
- * Columns the list opens with. The saved-views slice replaces this with the
- * view's own column set; until then it is the first N fields in the order the
- * Admin arranged them in the field builder.
+ * Columns the list opens with when no saved view supplies its own — the first
+ * N fields in the order the Admin arranged them in the field builder.
  */
 const MAX_COLUMNS = 12;
 
 const PAGE_SIZES = [25, 50, 100, 200] as const;
 const DEFAULT_PAGE_SIZE = 50;
+const LIMITS: ListQueryLimits = { sizes: PAGE_SIZES, defaultSize: DEFAULT_PAGE_SIZE };
+
+/** The physical column a status field points at — the same name on the core
+ *  tables and on the generic records table. Keyed on the COLUMN rather than a
+ *  field key, a label or a module slug, exactly as `cell.tsx` keys the chip. */
+const STATUS_COLUMN = 'statusId';
 
 /**
  * Column width by field TYPE — never by field name. An Admin-created field has
@@ -70,12 +77,76 @@ const COLUMN_WIDTH: Record<FieldType, number> = {
   AUTONUMBER: 140,
 };
 
-/** A positive integer from the query string, or null. Hand-edited URLs happen. */
-function positiveInt(raw: string | string[] | undefined): number | null {
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  if (value === undefined || value === '') return null;
-  const n = Number(value);
-  return Number.isInteger(n) && n > 0 ? n : null;
+/** A live field of this module, as this page needs it. */
+interface PageField {
+  key: string;
+  label: string;
+  type: FieldType;
+  systemColumn: string | null;
+  options: { value: string; label: string }[];
+}
+
+/**
+ * Which saved view is in effect, and what to say when the named one cannot be.
+ *
+ * An ABSENT `?view=` means "whatever the module's default view is" — that is
+ * what makes `isDefault` mean anything — so escaping the default needs the
+ * explicit `?view=none`.
+ *
+ * A named view that has since been deleted, or one whose stored spec no longer
+ * parses, does NOT fall through in silence. The list would then show every
+ * record while the URL still claimed to be filtered, and a screen showing more
+ * rows than it says is the failure this slice exists to prevent. It says so in
+ * a banner instead — the scope filter is unaffected either way, so this is a
+ * correctness problem rather than a leak.
+ *
+ * A view id belonging to someone else's private view resolves as "no longer
+ * available" rather than "forbidden", for the same reason the API answers 404
+ * for both: a "you may not see that view" message confirms that it exists.
+ */
+function resolveView(
+  views: SavedViewDto[],
+  requested: string | null,
+): { view: SavedViewDto | null; problem: string | null } {
+  if (requested === NO_VIEW) return { view: null, problem: null };
+
+  if (requested === null) {
+    // Nobody asked for this one, so a broken default is not worth a banner —
+    // it is already listed as unavailable in the picker and the rail.
+    return { view: views.find((v) => v.isDefault && v.isValid) ?? null, problem: null };
+  }
+
+  const found = views.find((v) => v.id === requested);
+  if (!found) {
+    // Deliberately says what did NOT happen rather than what is on screen: an
+    // ad-hoc filter may be in effect at the same time, and "showing all" would
+    // then be a second wrong statement fixing the first.
+    return { view: null, problem: 'That saved view is no longer available, so it was not applied.' };
+  }
+  if (!found.isValid) {
+    return {
+      view: null,
+      problem:
+        `“${found.name}” references a field that no longer exists, so it was not applied.`,
+    };
+  }
+  return { view: found, problem: null };
+}
+
+/**
+ * The view's column set, resolved against the fields this actor may see.
+ *
+ * A column naming a field that has since been deleted — or one hidden from
+ * this reader by the permission matrix — is dropped rather than rendered as an
+ * empty column. Dropping a COLUMN is safe in a way dropping a FILTER CONDITION
+ * never is: it shows less, not more.
+ */
+function viewColumns(view: SavedViewDto | null, byKey: Map<string, PageField>): PageField[] {
+  if (view === null || view.columns.length === 0) return [];
+  return [...view.columns]
+    .sort((a, b) => a.order - b.order)
+    .map((c) => byKey.get(c.fieldKey))
+    .filter((f): f is PageField => f !== undefined);
 }
 
 export default async function ModulePage({
@@ -85,7 +156,7 @@ export default async function ModulePage({
   params: Promise<{ moduleSlug: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const [{ moduleSlug }, query] = await Promise.all([params, searchParams]);
+  const [{ moduleSlug }, rawQuery] = await Promise.all([params, searchParams]);
 
   // The shell layout redirects too, but a page that reads permissions cannot
   // depend on a layout having run — layouts and pages render independently.
@@ -113,8 +184,9 @@ export default async function ModulePage({
   if (!mod) notFound();
 
   const engine = new PermissionEngine(principal.actor, principal.permissions);
+  const query = parseListQuery(rawQuery, LIMITS);
 
-  const [fieldRows, statusRows, viewRows, relatedModules] = await Promise.all([
+  const [fieldRows, statusRows, views, relatedModules] = await Promise.all([
     // Soft-deleted config stays in the table forever (invariant 4) and must
     // never come back as a column.
     prisma.fieldDefinition.findMany({
@@ -123,8 +195,10 @@ export default async function ModulePage({
       select: {
         key: true, label: true, type: true, systemColumn: true,
         // Options come along so a picklist cell can show its LABEL rather
-        // than the value it stores. Retired options are included: an older
-        // record still points at one and would otherwise lose its label.
+        // than the value it stores, and so the filter rail can offer them as
+        // choices. Retired options are included: an older record still points
+        // at one and would otherwise lose its label — and filtering FOR the
+        // retired ones is exactly how those records get found again.
         options: { select: { value: true, label: true }, orderBy: { displayOrder: 'asc' } },
       },
     }),
@@ -133,15 +207,13 @@ export default async function ModulePage({
       orderBy: { displayOrder: 'asc' },
       select: { id: true, name: true, tag: true, color: true },
     }),
-    prisma.savedView.findMany({
-      // ownerId null is a system view; isShared is one someone published.
-      where: {
-        moduleId: mod.id,
-        OR: [{ ownerId: null }, { isShared: true }, { ownerId: principal.user.id }],
-      },
-      orderBy: { name: 'asc' },
-      select: { id: true, name: true },
-    }),
+    // Through the views library, not a raw query: which views an actor may see
+    // (their own, published ones, the seeded ones, their role's) is a
+    // permission decision and belongs in exactly one place. Counts are NOT
+    // requested — each is its own aggregate, and the rail fetches them lazily
+    // when its Saved Filters group is opened rather than putting N queries in
+    // front of every pagination click.
+    listViews(principal, mod.slug),
     // "Related modules" is not a hardcoded list: it is whichever enabled
     // modules hold a relation field pointing at this one.
     prisma.moduleDefinition.findMany({
@@ -153,30 +225,62 @@ export default async function ModulePage({
 
   // Hidden fields are dropped HERE, before anything is queried or serialised —
   // a field hidden by the permission matrix never leaves the server, because
-  // hiding it in the UI is not a security control.
+  // hiding it in the UI is not a security control. It is also why a hidden
+  // field cannot be filtered on: repeated narrowing on a field you may not see
+  // still reads it.
   const hidden = engine.hiddenFields(mod.slug);
-  const fields = fieldRows.filter((f) => !hidden.has(f.key));
+  const fields: PageField[] = fieldRows.filter((f) => !hidden.has(f.key));
+  const fieldByKey = new Map(fields.map((f) => [f.key, f]));
 
-  // Only a size the page-size control actually offers is honoured. `?size=5000`
-  // in a hand-edited URL is a query that reads the whole module into memory.
-  const requestedSize = positiveInt(query['size']);
-  const pageSize =
-    requestedSize !== null && (PAGE_SIZES as readonly number[]).includes(requestedSize)
-      ? requestedSize
-      : DEFAULT_PAGE_SIZE;
-  const page = positiveInt(query['page']) ?? 1;
+  const { view: appliedView, problem: viewProblem } = resolveView(views, query.view);
+  const fromView = viewColumns(appliedView, fieldByKey);
+  const columnFields = fromView.length > 0 ? fromView : fields.slice(0, MAX_COLUMNS);
 
-  const columnFields = fields.slice(0, MAX_COLUMNS);
+  // The URL's sort overrides the view's; with neither, the repository's own
+  // default ordering stands.
+  const sort: SortSpec[] | null =
+    query.sort !== null ? [query.sort] : (appliedView?.sort ?? null);
 
-  // Only the columns are read. A module with 40 fields would otherwise select
-  // 40 columns and ship 40 values per row to draw 12 of them.
-  const { rows, total } = await listRecords({
-    module: { slug: mod.slug, isCore: mod.isCore },
-    fields: columnFields.map((f) => ({ key: f.key, type: f.type, systemColumn: f.systemColumn })),
-    engine,
-    take: pageSize,
-    skip: (page - 1) * pageSize,
-  });
+  let rows: { id: string }[] = [];
+  let total = 0;
+  let serverError: string | null = viewProblem;
+
+  // `?f=1` says an ad-hoc filter is in effect and its tree is in the fragment,
+  // which never reaches a server. Querying anyway would render rows that do
+  // not match the filter the user is looking at, so the query is skipped and
+  // the client owns it — see _components/list-query.ts.
+  if (!query.filtered) {
+    try {
+      // Only the COLUMNS are projected: a module with 40 fields would otherwise
+      // select 40 columns and ship 40 values per row to draw 12 of them.
+      // `allFields` is separate because a filter or sort on the thirteenth
+      // field is perfectly legitimate and still has to resolve.
+      const result = await listRecords({
+        module: { slug: mod.slug, isCore: mod.isCore },
+        fields: columnFields.map((f) => ({ key: f.key, type: f.type, systemColumn: f.systemColumn })),
+        allFields: fields.map((f) => ({ key: f.key, type: f.type, systemColumn: f.systemColumn })),
+        engine,
+        // Binds `isMe`. A query without it is refused rather than widened.
+        actor: principal.actor,
+        ...(appliedView?.filters ? { filters: appliedView.filters } : {}),
+        ...(sort ? { sort } : {}),
+        ...(query.search === null ? {} : { search: query.search }),
+        page: query.page,
+        pageSize: query.size,
+      });
+      rows = result.rows;
+      total = result.total;
+    } catch (err) {
+      // A view naming a deleted field, or a hand-edited `?sort=` naming one:
+      // the repository throws rather than dropping the condition, and this
+      // page says so and shows NOTHING. Falling back to the unfiltered list
+      // would show more records than the filter on screen claims to allow,
+      // which is precisely what the throw exists to prevent. Anything that is
+      // not a ConfigError is a real fault and still propagates.
+      if (!(err instanceof ConfigError)) throw err;
+      serverError = err.message;
+    }
+  }
 
   const columns: DataTableColumn[] = columnFields.map((f, i) => ({
     key: f.key,
@@ -186,6 +290,24 @@ export default async function ModulePage({
     // overflow columns scroll out from under it.
     ...(i === 0 ? { pinned: 'left' as const } : {}),
   }));
+
+  const statusOptions: PickerOption[] = statusRows.map((s) => ({ value: s.id, label: s.name }));
+
+  // A field is filterable when its TYPE declares operators — the field type
+  // registry decides, so a future type with none drops out here without this
+  // screen being touched.
+  const filterFields: FilterField[] = fields
+    .filter((f) => operatorsFor(f.type).length > 0)
+    .map((f) => ({
+      key: f.key,
+      label: f.label,
+      type: f.type,
+      // The status field is a pointer into the `Status` table, not a picklist:
+      // its choices are the module's statuses, which is why it looks optionless
+      // when read from FieldOption rows.
+      options: f.systemColumn === STATUS_COLUMN ? statusOptions : f.options,
+      usesUsers: f.type === 'USER_LOOKUP',
+    }));
 
   const canConfigureFields =
     principal.actor.isAdmin || principal.permissions.specials.has('MANAGE_FIELDS_LAYOUTS');
@@ -208,81 +330,55 @@ export default async function ModulePage({
         />
       </div>
 
-      <SearchBox slug={mod.slug} />
+      <SearchBox slug={mod.slug} query={query} limits={LIMITS} />
 
-      {/* Both panels are the same fixed height in the design (856 at 1024) and
-          each scrolls its own content — the page itself never grows. Expressed
-          against the viewport rather than as 856px so it holds on a taller
-          screen; the filter rail has 33 fields on Leads today and would
-          otherwise push the page past the fold. */}
-      <div className="flex h-[calc(100vh-11.5rem)] items-stretch gap-6">
-        <FilterPanel
-          slug={mod.slug}
-          labelPlural={mod.labelPlural}
-          // A field is filterable when its TYPE declares operators — the field
-          // type registry decides, so a future type with none drops out here
-          // without this screen being touched.
-          fields={fields
-            .filter((f) => operatorsFor(f.type).length > 0)
-            .map((f) => ({ key: f.key, label: f.label }))}
-          relatedModules={relatedModules}
-        />
-
-        {/* min-w-0: without it this flex child refuses to shrink below the
-            table's intrinsic width and the whole page scrolls sideways
-            instead of the table doing it. */}
-        <Panel className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <ListToolbar
-            slug={mod.slug}
-            labelPlural={mod.labelPlural}
-            views={viewRows}
-            pageSize={pageSize}
-            pageSizes={PAGE_SIZES}
-          />
-
-          {columns.length === 0 ? (
-            <PanelBody>
-              <p className="text-sm text-body">
-                {mod.labelPlural} has no fields yet, so this list has no columns to show.
-              </p>
-              {canConfigureFields ? (
-                <Link
-                  href={`/settings/modules/${mod.slug}/fields`}
-                  data-track={`${mod.slug}.list.fields.open`}
-                  className="mt-2 inline-block text-sm text-primary hover:underline"
-                >
-                  Add fields in the field builder →
-                </Link>
-              ) : null}
-            </PanelBody>
-          ) : (
-            <RecordTable
-              slug={mod.slug}
-              columns={columns}
-              // Only the columns' own fields cross to the client: the other 20
-              // a module may have would be payload nothing on screen reads.
-              fields={columnFields.map((f) => ({
-                key: f.key,
-                type: f.type,
-                systemColumn: f.systemColumn,
-                // A picklist cell shows its option LABEL, not the value stored
-                // underneath it.
-                options: f.options,
-              }))}
-              statuses={statusRows}
-              rows={rows}
-              emptyMessage={`Nothing here yet — ${mod.labelPlural} you create or import appear in this list.`}
-            />
-          )}
-
-          <Pagination
-            slug={mod.slug}
-            page={page}
-            pageCount={Math.ceil(total / pageSize)}
-            pageSize={pageSize}
-          />
-        </Panel>
-      </div>
+      <ListScreen
+        slug={mod.slug}
+        labelPlural={mod.labelPlural}
+        filterFields={filterFields}
+        relatedModules={relatedModules}
+        views={views.map((v) => ({
+          id: v.id,
+          name: v.name,
+          isShared: v.isShared,
+          isDefault: v.isDefault,
+          isOwn: v.isOwn,
+          isValid: v.isValid,
+        }))}
+        appliedView={
+          appliedView === null
+            ? null
+            : {
+                id: appliedView.id,
+                filters: appliedView.filters ?? null,
+                sort: appliedView.sort ?? null,
+              }
+        }
+        columns={columns}
+        // Only the columns' own fields cross to the client: the other 20 a
+        // module may have would be payload nothing on screen reads.
+        cellFields={columnFields.map((f) => ({
+          key: f.key,
+          type: f.type,
+          systemColumn: f.systemColumn,
+          // A picklist cell shows its option LABEL, not the value stored
+          // underneath it.
+          options: f.options,
+        }))}
+        statuses={statusRows}
+        rows={rows}
+        total={total}
+        query={query}
+        limits={LIMITS}
+        pageSizes={PAGE_SIZES}
+        // Publishing a view or pinning a default changes what everyone else
+        // sees, so the API gates both on the layout permission. The overlay
+        // mirrors the gate rather than offering a switch whose save would 403.
+        canShareViews={canConfigureFields}
+        fieldBuilderHref={canConfigureFields ? `/settings/modules/${mod.slug}/fields` : null}
+        emptyMessage={`Nothing here yet — ${mod.labelPlural} you create or import appear in this list.`}
+        serverError={serverError}
+      />
     </div>
   );
 }

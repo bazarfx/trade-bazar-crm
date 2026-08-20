@@ -1,27 +1,59 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
-import { Panel } from '@/components/ui';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import type { FieldType, FilterNode } from '@crm/shared';
+import { api } from '@/lib/client-api';
+import type { UserListItem } from '@/lib/config/users';
+import { Button, Panel } from '@/components/ui';
 import { ChevronDownIcon } from './icons';
+import { ConditionRow, type PickerOption } from './filter-condition-row';
+import { draftError, newDraft, treeFrom, type DraftCondition } from './filter-model';
 
 /**
- * The left filter rail. Three collapsible groups, exactly the three the
- * reference frame draws — but nothing inside them is written by hand: the
- * field list is this module's `FieldDefinition` rows and the related-module
- * list is whichever modules actually point at this one.
+ * The left filter rail — the design's four groups, and the only place an
+ * ad-hoc filter is built.
  *
- * The rows are disabled on purpose. The filter compiler is a later slice, and
- * a control that looks live and silently does nothing is worse than one that
- * says why it cannot yet.
+ * Nothing in it is written by hand. The field rows are this module's
+ * `FieldDefinition` rows narrowed to the types that declare operators, the
+ * operators come from the registry, the related-module list is whichever
+ * modules point at this one, and the saved filters are `SavedView` rows. The
+ * designed Leads rail is what this renders when the Leads module drives it.
+ *
+ * SECURITY NOTE, since this is the screen that builds the tree: nothing here
+ * can widen a result set. The tree it emits is ANDed underneath the reader's
+ * own scope filter in the repository (`combine(scopedWhere, userWhereFor)`),
+ * so the worst a bad filter can do is show the user fewer of their own rows.
+ * What it must never do is show MORE rows than it says — which is why an
+ * incomplete condition blocks the Apply instead of being quietly dropped.
  */
+
 export interface FilterField {
   key: string;
   label: string;
+  type: FieldType;
+  /**
+   * The choices for a picker, resolved server-side: a picklist's own options,
+   * or the module's statuses when this field IS the status pointer. Keyed off
+   * the physical column there, never off a field name.
+   */
+  options: PickerOption[];
+  /** a user field's picker is the user list, which is fetched, not seeded */
+  usesUsers: boolean;
 }
 
 export interface RelatedModule {
   slug: string;
   labelPlural: string;
+}
+
+export interface RailView {
+  id: string;
+  name: string;
+  isShared: boolean;
+  isDefault: boolean;
+  isOwn: boolean;
+  /** false when the stored spec no longer parses — listed, but not applicable */
+  isValid: boolean;
 }
 
 export interface FilterPanelProps {
@@ -30,39 +62,186 @@ export interface FilterPanelProps {
   labelPlural: string;
   fields: FilterField[];
   relatedModules: RelatedModule[];
+  views: RailView[];
+  appliedViewId: string | null;
+  /** the conditions the applied filter (link or saved view) resolved to */
+  initialDrafts: DraftCondition[];
+  /**
+   * What the rail cannot faithfully represent about the applied filter, if
+   * anything. Shown above the rows rather than hidden, because every one of
+   * these means "re-applying from here changes the filter" — and every one of
+   * them changes it in the widening direction.
+   */
+  warnings: string[];
+  /** an ad-hoc filter is in effect right now */
+  isFiltered: boolean;
+  onApply: (tree: FilterNode | null) => void;
+  onClear: () => void;
+  onSaveOpen: () => void;
+  onApplyView: (viewId: string) => void;
+  /** bumped by the toolbar's Filter button to bring the rail into focus */
+  focusToken: number;
 }
 
-/** The reason every row in here is inert today, said once. */
-const PENDING_REASON = 'Filtering arrives with the filter engine slice.';
+/**
+ * The system group stays inert, and says so.
+ *
+ * `Activities`, `Cadences`, `Touched/Untouched Records`, `Age in N Days` and
+ * the rest are ENGINE concepts, not `FieldDefinition` rows: they need the
+ * activity log and the campaign link, neither of which exists yet. A live
+ * checkbox here would compile to a condition that matches nothing, and a
+ * filter that silently matches nothing is worse than an absent one — the user
+ * concludes they have no records, not that the feature is missing.
+ */
+const SYSTEM_NOTE =
+  'Untouched records, locked records, activities and age-in-days are computed by the ' +
+  'filter engine from the activity log, not from this module’s fields. They arrive with ' +
+  'the activity and campaign slices.';
 
-export function FilterPanel({ slug, labelPlural, fields, relatedModules }: FilterPanelProps) {
-  // Open by default, as the frame draws them: a rail that starts collapsed
-  // hides the one thing it exists to show.
+const RELATED_NOTE =
+  'Filtering across a related module needs the link to be queryable in one tree. ' +
+  'The modules that point at this one are listed; the join arrives with the related-records slice.';
+
+export function FilterPanel({
+  slug,
+  labelPlural,
+  fields,
+  relatedModules,
+  views,
+  appliedViewId,
+  initialDrafts,
+  warnings,
+  isFiltered,
+  onApply,
+  onClear,
+  onSaveOpen,
+  onApplyView,
+  focusToken,
+}: FilterPanelProps) {
+  // Keyed by field key: the rail is a list of fields, so one row per field is
+  // the only arrangement it can draw. A second condition on the same field is
+  // an advanced-filter concept and `draftsFrom` reports it rather than losing it.
+  const [drafts, setDrafts] = useState<Record<string, DraftCondition>>(() =>
+    Object.fromEntries(initialDrafts.map((d) => [d.fieldKey, d])),
+  );
+  // Errors appear on Apply, not on the first keystroke of a half-typed value.
+  const [showErrors, setShowErrors] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const fieldsGroupRef = useRef<HTMLDivElement>(null);
+
+  const fieldByKey = useMemo(() => new Map(fields.map((f) => [f.key, f])), [fields]);
+  const active = useMemo(
+    // Rail order, not insertion order, so the tree a user builds twice is the
+    // same tree — and so a saved view's name matches what it reloads as.
+    () => fields.map((f) => drafts[f.key]).filter((d): d is DraftCondition => d !== undefined),
+    [fields, drafts],
+  );
+
+  const errors = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const draft of active) {
+      const message = draftError(draft);
+      if (message !== null) out[draft.fieldKey] = message;
+    }
+    return out;
+  }, [active]);
+
+  // The user list is a second round trip and only when a user field is
+  // actually being filtered on — a module with no USER_LOOKUP field, or a rail
+  // nobody has opened one on, must not pay for it.
+  const needsUsers = active.some((d) => fieldByKey.get(d.fieldKey)?.usesUsers === true);
+  const users = useUserOptions(needsUsers);
+
+  // The toolbar's Filter button brings the rail into view rather than opening
+  // a second filter surface — the rail IS the filter UI, and the design keeps
+  // it on screen. Token rather than a callback ref so the parent needs to know
+  // nothing about the rail's internals.
+  useEffect(() => {
+    if (focusToken === 0) return;
+    setCollapsed((prev) => ({ ...prev, fields: false }));
+    const group = fieldsGroupRef.current;
+    if (!group) return;
+    group.scrollIntoView({ block: 'nearest' });
+    const first = group.querySelector<HTMLElement>('input, select');
+    first?.focus();
+  }, [focusToken]);
+
+  function toggleField(field: FilterField, on: boolean) {
+    setDrafts((prev) => {
+      const next = { ...prev };
+      if (on) next[field.key] = newDraft(field.key, field.type);
+      else delete next[field.key];
+      return next;
+    });
+  }
+
+  function apply() {
+    setShowErrors(true);
+    // An incomplete row is not dropped: dropping a condition widens the result
+    // set, which is the one thing a filter must never do quietly.
+    if (Object.keys(errors).length > 0) return;
+    onApply(treeFrom(active));
+  }
+
+  function clear() {
+    setDrafts({});
+    setShowErrors(false);
+    onClear();
+  }
 
   const groups: { id: string; label: string; body: ReactNode }[] = [
-    {
-      id: 'system',
-      label: 'System Defined Filters',
-      body: (
-        <EmptyNote>
-          Untouched records, locked records and the other system filters are defined by the filter
-          engine, not by this module. {PENDING_REASON}
-        </EmptyNote>
-      ),
-    },
+    { id: 'system', label: 'System Defined Filters', body: <Note>{SYSTEM_NOTE}</Note> },
     {
       id: 'fields',
       label: 'Filter By fields',
       body:
         fields.length === 0 ? (
-          <EmptyNote>This module has no fields yet, so there is nothing to filter on.</EmptyNote>
+          <Note>This module has no filterable fields yet.</Note>
         ) : (
-          <ul className="flex flex-col gap-1">
-            {fields.map((f) => (
-              <FilterRow key={f.key} label={f.label} />
+          <div ref={fieldsGroupRef}>
+            {warnings.map((warning) => (
+              <p
+                key={warning}
+                className="mb-2 rounded bg-warning/10 px-2 py-1 text-xs text-heading"
+              >
+                {warning}
+              </p>
             ))}
-          </ul>
+            <ul className="flex flex-col gap-1">
+              {fields.map((field) => {
+                const draft = drafts[field.key];
+                return (
+                  <li key={field.key}>
+                    <label
+                      className="flex cursor-pointer items-center gap-2 text-xs text-body"
+                      title={field.label}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft !== undefined}
+                        onChange={(e) => toggleField(field, e.target.checked)}
+                        className="h-4 w-4 shrink-0 rounded accent-primary"
+                        data-track={`${slug}.filter.field.toggle`}
+                      />
+                      <span className="truncate">{field.label}</span>
+                    </label>
+
+                    {draft !== undefined ? (
+                      <ConditionRow
+                        slug={slug}
+                        field={field}
+                        draft={draft}
+                        onChange={(next) => setDrafts((prev) => ({ ...prev, [field.key]: next }))}
+                        options={field.usesUsers ? users.options : field.options}
+                        optionsNote={field.usesUsers ? users.note : null}
+                        error={showErrors ? (errors[field.key] ?? null) : null}
+                      />
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         ),
     },
     {
@@ -70,14 +249,33 @@ export function FilterPanel({ slug, labelPlural, fields, relatedModules }: Filte
       label: 'Filter By Related Modules',
       body:
         relatedModules.length === 0 ? (
-          <EmptyNote>No other module links to this one yet.</EmptyNote>
+          <Note>No other module links to this one yet.</Note>
         ) : (
-          <ul className="flex flex-col gap-1">
-            {relatedModules.map((m) => (
-              <FilterRow key={m.slug} label={m.labelPlural} />
-            ))}
-          </ul>
+          <>
+            <ul className="flex flex-col gap-1">
+              {relatedModules.map((m) => (
+                <li key={m.slug} className="truncate text-xs text-body opacity-70" title={m.labelPlural}>
+                  {m.labelPlural} (Connected Records)
+                </li>
+              ))}
+            </ul>
+            <Note>{RELATED_NOTE}</Note>
+          </>
         ),
+    },
+    {
+      // The design's fourth group. (N) is the number of saved filters; the
+      // per-view number beside each name is its live match count.
+      id: 'saved',
+      label: `Saved Filters (${views.length})`,
+      body: (
+        <SavedFilters
+          slug={slug}
+          views={views}
+          appliedViewId={appliedViewId}
+          onApplyView={onApplyView}
+        />
+      ),
     },
   ];
 
@@ -127,29 +325,180 @@ export function FilterPanel({ slug, labelPlural, fields, relatedModules }: Filte
             );
           })}
         </div>
+
+        {/* The footer the file draws. It sits outside the scroll port so Apply
+            is reachable on a module with 33 filterable fields. */}
+        <div className="mt-3 flex shrink-0 flex-col gap-2 border-t border-border pt-3">
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              className="flex-1"
+              disabled={active.length === 0 && !isFiltered}
+              onClick={clear}
+              data-track={`${slug}.filter.clear.click`}
+            >
+              Clear
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              className="flex-1"
+              onClick={apply}
+              data-track={`${slug}.filter.apply.click`}
+            >
+              Apply Filter
+            </Button>
+          </div>
+
+          {/* Save Filter appears once a filter is applied, exactly as the file
+              shows it — there is nothing to name before then. */}
+          {isFiltered ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onSaveOpen}
+              data-track={`${slug}.view.save.open`}
+            >
+              Save Filter
+            </Button>
+          ) : null}
+        </div>
       </div>
     </Panel>
   );
 }
 
-function EmptyNote({ children }: { children: ReactNode }) {
+function Note({ children }: { children: ReactNode }) {
   return <p className="text-xs text-body">{children}</p>;
 }
 
 /**
- * A filter row, hand-rolled rather than the `Checkbox` primitive: that one is
- * built for form density (20px control, 14px label) and this rail runs at the
- * frame's list density (16px control, 12px label, 20px pitch). It is also
- * permanently disabled, so it carries no `data-track` — a control that cannot
- * be interacted with cannot produce an interaction to log.
+ * The saved-view list, with live match counts.
+ *
+ * The counts are fetched FROM THE CLIENT, after the list has already painted,
+ * and only while this group is expanded. Each one is its own aggregate over
+ * the matched set (`listViews({ withCounts })` caps itself at 20), so asking
+ * for them in the page's own server render would put N queries in front of the
+ * rows — the numbers are a label on the rail, and a label must not delay the
+ * data. They survive client-side navigation, so paging through the list does
+ * not re-run them.
+ *
+ * A view whose count cannot be computed — one referencing a field an Admin has
+ * since deleted — shows no number rather than a wrong one.
  */
-function FilterRow({ label }: { label: string }) {
+function SavedFilters({
+  slug,
+  views,
+  appliedViewId,
+  onApplyView,
+}: {
+  slug: string;
+  views: RailView[];
+  appliedViewId: string | null;
+  onApplyView: (viewId: string) => void;
+}) {
+  const [counts, setCounts] = useState<Record<string, number> | null>(null);
+  const [countsFailed, setCountsFailed] = useState(false);
+
+  useEffect(() => {
+    if (views.length === 0) return;
+    let cancelled = false;
+    api<{ views: { id: string; matchCount?: number }[] }>(`/api/modules/${slug}/views?counts=1`)
+      .then((res) => {
+        if (cancelled) return;
+        const next: Record<string, number> = {};
+        for (const v of res.views) if (v.matchCount !== undefined) next[v.id] = v.matchCount;
+        setCounts(next);
+      })
+      // A missing count is a missing label, never a broken rail: the views are
+      // already listed and still applicable without it.
+      .catch(() => {
+        if (!cancelled) setCountsFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slug, views.length]);
+
+  if (views.length === 0) {
+    return <Note>No saved filters yet. Apply a filter and save it to keep it here.</Note>;
+  }
+
   return (
-    <li>
-      <label className="flex cursor-not-allowed items-center gap-2 text-xs text-body opacity-70" title={`${label} — ${PENDING_REASON}`}>
-        <input type="checkbox" disabled className="h-4 w-4 shrink-0 rounded accent-primary" />
-        <span className="truncate">{label}</span>
-      </label>
-    </li>
+    <>
+      <ul className="flex flex-col gap-1">
+        {views.map((view) => {
+          const count = counts?.[view.id];
+          return (
+            <li key={view.id}>
+              <button
+                type="button"
+                disabled={!view.isValid}
+                aria-current={view.id === appliedViewId ? 'true' : undefined}
+                title={
+                  view.isValid
+                    ? `${view.name}${view.isShared ? ' — shared' : ''}${view.isDefault ? ' — default' : ''}`
+                    : `${view.name} — this view references a field that no longer exists, so it cannot be applied.`
+                }
+                onClick={() => onApplyView(view.id)}
+                data-track={`${slug}.view.select`}
+                className={
+                  'flex w-full items-center gap-2 rounded px-1 py-1 text-left text-xs ' +
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ' +
+                  'disabled:cursor-not-allowed disabled:opacity-60 ' +
+                  (view.id === appliedViewId
+                    ? 'bg-background font-medium text-heading'
+                    : 'text-body hover:bg-background')
+                }
+              >
+                <span className="min-w-0 flex-1 truncate">{view.name}</span>
+                {view.isShared ? (
+                  <span className="shrink-0 text-overline uppercase text-muted">Shared</span>
+                ) : null}
+                {count !== undefined ? (
+                  <span className="shrink-0 tabular-nums text-muted">{count}</span>
+                ) : null}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {countsFailed ? (
+        <p className="mt-1 text-xs text-muted">Match counts are unavailable right now.</p>
+      ) : null}
+    </>
   );
+}
+
+/** The owner picker's options, fetched at most once per mount and only when a
+ *  user field is actually being filtered on. */
+function useUserOptions(enabled: boolean): { options: PickerOption[]; note: string | null } {
+  const [options, setOptions] = useState<PickerOption[]>([]);
+  const [note, setNote] = useState<string | null>(null);
+  const loaded = useRef(false);
+
+  useEffect(() => {
+    if (!enabled || loaded.current) return;
+    loaded.current = true;
+    let cancelled = false;
+    // 200 is the route's own cap. A role that cannot enumerate users can still
+    // filter — "is me", "is empty" and a typed id all still work — so a failure
+    // here is a note, not an error.
+    api<{ users: UserListItem[] }>('/api/users?take=200')
+      .then((res) => {
+        if (cancelled) return;
+        setOptions(
+          res.users.map((u) => ({ value: u.id, label: u.fullName ?? u.email ?? u.id })),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setNote('The user list is not available to your role — “is me” still works.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled]);
+
+  return { options, note };
 }

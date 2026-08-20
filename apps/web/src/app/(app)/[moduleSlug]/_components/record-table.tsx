@@ -30,6 +30,11 @@ export interface RecordTableProps {
   statuses: StatusOption[];
   rows: TableRow[];
   emptyMessage: string;
+  loading?: boolean;
+  /** the column the list is ordered by, when it is ordered by one */
+  sort?: { key: string; direction: 'asc' | 'desc' };
+  /** a header was activated — the screen decides what sorting by it means */
+  onSortColumn?: (key: string) => void;
 }
 
 export function RecordTable({
@@ -39,6 +44,9 @@ export function RecordTable({
   statuses,
   rows,
   emptyMessage,
+  loading = false,
+  sort,
+  onSortColumn,
 }: RecordTableProps) {
   const router = useRouter();
 
@@ -69,6 +77,9 @@ export function RecordTable({
       // right here rather than on each row.
       trackPrefix={`${slug}.list`}
       emptyMessage={emptyMessage}
+      loading={loading}
+      {...(sort ? { sort } : {})}
+      {...(onSortColumn ? { onSortColumn } : {})}
     />
   );
 }

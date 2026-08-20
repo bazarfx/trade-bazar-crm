@@ -22,6 +22,16 @@ export interface DataTableProps<T extends Record<string, unknown> = Record<strin
   trackPrefix: string;
   emptyMessage?: string;
   loading?: boolean;
+  /** The column the rows are ordered by, when the caller orders them. */
+  sort?: { key: string; direction: 'asc' | 'desc' };
+  /**
+   * Makes the headers sortable. Called with the column key that was activated;
+   * the caller decides what that means — usually "sort by this, ascending, or
+   * flip the direction if it already is". Omitted, the headers stay plain
+   * text, because a header that looks clickable and is not is worse than one
+   * that does not.
+   */
+  onSortColumn?: (key: string) => void;
 }
 
 /**
@@ -117,6 +127,8 @@ export function DataTable<T extends Record<string, unknown>>({
   trackPrefix,
   emptyMessage = 'No records match this view.',
   loading = false,
+  sort,
+  onSortColumn,
 }: DataTableProps<T>) {
   const offsets = stickyOffsets(columns);
   const totalWidth = columns.reduce((sum, c) => sum + (c.width ?? DEFAULT_COLUMN_WIDTH), 0);
@@ -142,24 +154,53 @@ export function DataTable<T extends Record<string, unknown>>({
 
         <thead>
           <tr>
-            {columns.map((col, i) => (
-              <th
-                key={col.key}
-                scope="col"
-                style={stickyStyle(offsets[i], col.pinned)}
-                className={cn(
-                  'sticky top-0 h-11 border-b border-border bg-background px-3 ' +
-                    'text-xs font-medium text-body',
-                  // A pinned header is sticky on both axes and has to sit above
-                  // the plain header cells it slides underneath.
-                  col.pinned ? 'z-30' : 'z-20',
-                )}
-              >
-                <span className="block truncate" title={col.label}>
-                  {col.label}
-                </span>
-              </th>
-            ))}
+            {columns.map((col, i) => {
+              const sorted = sort?.key === col.key ? sort.direction : undefined;
+              return (
+                <th
+                  key={col.key}
+                  scope="col"
+                  // aria-sort is what tells a screen reader the table is
+                  // ordered and which way — the arrow below is only for eyes.
+                  aria-sort={
+                    sorted === undefined ? undefined : sorted === 'asc' ? 'ascending' : 'descending'
+                  }
+                  style={stickyStyle(offsets[i], col.pinned)}
+                  className={cn(
+                    'sticky top-0 h-11 border-b border-border bg-background px-3 ' +
+                      'text-xs font-medium text-body',
+                    // A pinned header is sticky on both axes and has to sit above
+                    // the plain header cells it slides underneath.
+                    col.pinned ? 'z-30' : 'z-20',
+                  )}
+                >
+                  {onSortColumn ? (
+                    <button
+                      type="button"
+                      onClick={() => onSortColumn(col.key)}
+                      data-track={`${trackPrefix}.column.sort`}
+                      className={cn(
+                        'flex w-full items-center gap-1 text-left focus-visible:outline-none ' +
+                          'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary',
+                        sorted === undefined ? 'hover:text-heading' : 'text-heading',
+                      )}
+                    >
+                      <span className="block truncate" title={col.label}>
+                        {col.label}
+                      </span>
+                      {/* aria-hidden: aria-sort on the header already says it. */}
+                      <span aria-hidden="true" className="shrink-0">
+                        {sorted === undefined ? '' : sorted === 'asc' ? '\u2191' : '\u2193'}
+                      </span>
+                    </button>
+                  ) : (
+                    <span className="block truncate" title={col.label}>
+                      {col.label}
+                    </span>
+                  )}
+                </th>
+              );
+            })}
           </tr>
         </thead>
 

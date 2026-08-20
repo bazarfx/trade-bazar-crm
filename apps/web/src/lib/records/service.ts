@@ -45,6 +45,7 @@ import {
   selectFor,
   storageFor,
   type ModuleRef,
+  type RecordQuery,
   type RecordRow,
   type Row,
   type Storage,
@@ -417,17 +418,19 @@ function mayChooseOwner(ctx: ModuleContext): boolean {
 export async function listModuleRecords(
   principal: Principal,
   moduleSlug: string,
-  opts: { take: number; skip?: number },
-): Promise<{ records: RecordRow[]; total: number }> {
+  opts: RecordQuery & { take?: number; skip?: number },
+): Promise<{ records: RecordRow[]; total: number; page: number; pageSize: number }> {
   const ctx = await moduleContext(principal, moduleSlug);
-  const { rows, total } = await listRecords({
+  const { rows, total, page, pageSize } = await listRecords({
+    ...opts,
     module: ctx.module,
     fields: ctx.metas,
     engine: ctx.engine,
-    take: opts.take,
-    skip: opts.skip ?? 0,
+    // The actor binds `isMe`. Nothing else in a filter tree may name a user,
+    // so this is the only identity the query side ever needs.
+    actor: principal.actor,
   });
-  return { records: rows, total };
+  return { records: rows, total, page, pageSize };
 }
 
 /**

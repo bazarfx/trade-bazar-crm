@@ -6,9 +6,15 @@
  * the duplicate scan — lives in `@/lib/records/service`, so no route can
  * forget one and no second caller (the worker's import and webhook pipelines)
  * can implement them differently.
+ *
+ * GET carries the SIMPLE query state — search term, sort, page — because that
+ * belongs in a URL: it is what makes a filtered list linkable, bookmarkable
+ * and back-button-able. A FILTER TREE does not go here; it goes to
+ * `./records/query` as a POST body, for the reasons written in that file.
  */
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { MAX_SORT_KEYS, type SortSpec } from '@crm/shared';
 import { guarded, parseBody } from '@/lib/api';
 import { requestMeta } from '@/lib/audit';
 import { createRecord, listModuleRecords } from '@/lib/records/service';
@@ -25,13 +31,42 @@ function intParam(raw: string | null, fallback: number, max: number): number {
   return Math.min(n, max);
 }
 
+/**
+ * `?sort=lead_status:asc,created_at:desc` — a compact form, not JSON.
+ *
+ * A sort is a short list of (key, direction) pairs and reads fine in a URL,
+ * where it is worth having: it survives a copied link. Unknown keys are NOT
+ * dropped here — they travel to the repository, which resolves them and throws
+ * a 400 naming the key. Dropping one silently would mean a link that quietly
+ * sorts by something other than what it says.
+ */
+function sortParam(raw: string | null): SortSpec[] | undefined {
+  if (!raw) return undefined;
+  const specs: SortSpec[] = [];
+  for (const part of raw.split(',').slice(0, MAX_SORT_KEYS)) {
+    const [fieldKey, direction] = part.split(':');
+    if (!fieldKey) continue;
+    specs.push({ fieldKey: fieldKey.trim(), direction: direction === 'desc' ? 'desc' : 'asc' });
+  }
+  return specs.length > 0 ? specs : undefined;
+}
+
 export const GET = guarded<{ slug: string }>(async (req, principal, { slug }) => {
   const params = new URL(req.url).searchParams;
-  const { records, total } = await listModuleRecords(principal, slug, {
+  const pageParam = intParam(params.get('page'), 0, 100_000);
+  const sort = sortParam(params.get('sort'));
+  const search = params.get('search')?.trim();
+
+  const { records, total, page, pageSize } = await listModuleRecords(principal, slug, {
     take: Math.max(intParam(params.get('take'), DEFAULT_TAKE, MAX_TAKE), 1),
     skip: intParam(params.get('skip'), 0, Number.MAX_SAFE_INTEGER),
+    // `page` is the newer, 1-based form; `skip` stays for callers that already
+    // speak it. `paging()` in the repository decides which wins, in one place.
+    ...(pageParam > 0 ? { page: pageParam } : {}),
+    ...(search ? { search } : {}),
+    ...(sort ? { sort } : {}),
   });
-  return NextResponse.json({ records, total });
+  return NextResponse.json({ records, total, page, pageSize });
 });
 
 export const POST = guarded<{ slug: string }>(async (req, principal, { slug }) => {
