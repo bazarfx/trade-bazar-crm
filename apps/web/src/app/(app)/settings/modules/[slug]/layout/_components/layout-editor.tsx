@@ -22,6 +22,8 @@ import {
 } from '@dnd-kit/sortable';
 import { LAYOUT_TARGETS, type LayoutSpec, type LayoutTargetValue } from '@crm/shared';
 import { SortableRow } from '@/components/config/sortable';
+import { Segmented } from '@/components/config/segmented';
+import { Button, Panel, PanelHeader, Select } from '@/components/ui';
 import { api, ApiClientError } from '@/lib/client-api';
 import {
   reconcile,
@@ -309,37 +311,33 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
   // ── render ───────────────────────────────────────────────────────────────
 
   return (
-    <div className="mx-auto max-w-[1440px] px-8 py-10">
-      <h1 className="text-xl font-semibold text-heading">{moduleLabel} — layout</h1>
-      <p className="mt-1 text-sm text-body">
-        Arrange sections and fields. Section changes apply immediately; field placement publishes
-        when you save.
-      </p>
+    // The shell's <main> owns the canvas gutter; a second page-level one put
+    // every settings screen on a different grid from the module list.
+    <div className="flex flex-col gap-6">
+      <div>
+        <h1 className="text-title font-medium text-heading">{moduleLabel} — layout</h1>
+        <p className="mt-1 text-sm text-body">
+          Arrange sections and fields. Section changes apply immediately; field placement publishes
+          when you save.
+        </p>
+      </div>
 
-      <div className="mt-6 flex flex-wrap items-center gap-3">
-        <div role="group" aria-label="Layout target" className="inline-flex overflow-hidden rounded border border-border">
-          {LAYOUT_TARGETS.map((t) => (
-            <button
-              key={t}
-              type="button"
-              aria-pressed={target === t}
-              onClick={() => setTarget(t)}
-              data-track={`${slug}.layout.target.select`}
-              className={`px-4 py-1.5 text-sm ${
-                target === t ? 'bg-primary text-surface' : 'bg-surface text-heading hover:bg-background'
-              }`}
-            >
-              {t === 'FORM' ? 'Form' : 'Detail'}
-            </button>
-          ))}
-        </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <Segmented
+          label="Layout target"
+          options={LAYOUT_TARGETS}
+          value={target}
+          onChange={setTarget}
+          renderLabel={(t) => (t === 'FORM' ? 'Form' : 'Detail')}
+          dataTrack={`${slug}.layout.target.select`}
+        />
 
-        <select
+        <Select
           value={roleId ?? ''}
           onChange={(e) => setRoleId(e.target.value || null)}
           aria-label="Role"
           data-track={`${slug}.layout.role.select`}
-          className="rounded border border-border bg-surface px-3 py-1.5 text-sm text-heading outline-none focus:border-primary"
+          className="w-auto bg-surface"
         >
           <option value="">All roles</option>
           {roles.map((r) => (
@@ -347,65 +345,62 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
               {r.name}
             </option>
           ))}
-        </select>
+        </Select>
 
         <div className="ml-auto flex items-center gap-3">
           {dirty && <span className="text-xs text-warning">Unsaved changes</span>}
           {!dirty && published && <span className="text-xs text-success">Published</span>}
-          <button
-            type="button"
+          <Button
+            variant="secondary"
             onClick={() => setSectionForm({ section: null })}
             disabled={loading}
             data-track={`${slug}.layout.section.add`}
-            className="rounded border border-border px-3 py-1.5 text-sm text-heading hover:bg-background disabled:opacity-60"
           >
             Add section
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="secondary"
             onClick={() => setPreviewOpen(true)}
             disabled={loading}
             data-track={`${slug}.layout.preview.open`}
-            className="rounded border border-border px-3 py-1.5 text-sm text-heading hover:bg-background disabled:opacity-60"
           >
             Preview
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
             onClick={() => void save()}
-            disabled={!dirty || saving || loading}
+            disabled={!dirty || loading}
+            loading={saving}
             data-track={`${slug}.layout.save.click`}
-            className="rounded bg-primary px-4 py-1.5 text-sm font-medium text-surface disabled:opacity-60"
           >
             {saving ? 'Publishing…' : 'Save'}
-          </button>
+          </Button>
         </div>
       </div>
 
       {!loading && roleId !== null && source !== 'role' && (
-        <p className="mt-2 text-xs text-body">
+        <p className="-mt-3 text-xs text-body">
           Inheriting the module layout — the first save creates this role&rsquo;s own copy.
         </p>
       )}
       {!loading && roleId === null && source === 'none' && (
-        <p className="mt-2 text-xs text-body">No layout saved yet — showing the default field order.</p>
+        <p className="-mt-3 text-xs text-body">No layout saved yet — showing the default field order.</p>
       )}
 
       {error && (
-        <p role="alert" className="mt-4 rounded bg-error/10 px-4 py-3 text-sm text-error">
+        <p role="alert" className="rounded bg-error/10 px-4 py-3 text-sm text-error">
           {error}
         </p>
       )}
 
       {loading ? (
-        <p className="mt-8 text-sm text-body">Loading layout…</p>
+        <p className="text-sm text-body">Loading layout…</p>
       ) : draft.length === 0 ? (
-        <section className="mt-6 rounded border border-border bg-surface p-6">
+        <Panel className="p-6">
           <p className="text-sm text-body">
             No sections yet — add one to start placing fields. Until then, forms render every field
             in plain order.
           </p>
-        </section>
+        </Panel>
       ) : (
         <DndContext
           sensors={sensors}
@@ -417,7 +412,7 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
           onDragCancel={() => setActiveDrag(null)}
         >
           <SortableContext items={sectionIds} strategy={verticalListSortingStrategy}>
-            <div className="mt-6 flex flex-col gap-4">
+            <div className="flex flex-col gap-4">
               {draft.map((ds) => {
                 const meta = sectionById.get(ds.sectionId);
                 if (!meta) return null;
@@ -427,35 +422,38 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
                     id={ds.sectionId}
                     dataTrack={`${slug}.layout.section.reorder`}
                   >
-                    <div className="min-w-0 flex-1 rounded border border-border bg-surface">
-                      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
-                        <div className="flex min-w-0 items-baseline gap-3">
-                          <h2 className="truncate text-sm font-semibold text-heading" title={meta.label}>
-                            {meta.label}
-                          </h2>
-                          <span className="shrink-0 text-xs text-body">
-                            {meta.columns}-column grid
+                    <Panel className="min-w-0 flex-1">
+                      <PanelHeader
+                        className="px-4 py-3"
+                        title={
+                          <span className="flex min-w-0 items-baseline gap-3">
+                            <span className="truncate">{meta.label}</span>
+                            <span className="shrink-0 text-xs font-normal text-body">
+                              {meta.columns}-column grid
+                            </span>
                           </span>
-                        </div>
-                        <div className="flex shrink-0 gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setSectionForm({ section: meta })}
-                            data-track={`${slug}.layout.section.rename`}
-                            className="rounded border border-border px-2 py-1 text-xs text-heading hover:bg-background"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void deleteSection(meta)}
-                            data-track={`${slug}.layout.section.delete`}
-                            className="rounded border border-border px-2 py-1 text-xs text-error hover:bg-background"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </header>
+                        }
+                        actions={
+                          <>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => setSectionForm({ section: meta })}
+                              data-track={`${slug}.layout.section.rename`}
+                            >
+                              Edit
+                            </Button>
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() => void deleteSection(meta)}
+                              data-track={`${slug}.layout.section.delete`}
+                            >
+                              Delete
+                            </Button>
+                          </>
+                        }
+                      />
                       <SortableContext
                         items={ds.fields.map((f) => f.fieldId)}
                         strategy={verticalListSortingStrategy}
@@ -488,34 +486,19 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
                                 >
                                   {field.key}
                                 </span>
-                                <div
-                                  role="group"
-                                  aria-label={`Column span for ${field.label}`}
-                                  className="inline-flex shrink-0 overflow-hidden rounded border border-border"
-                                >
-                                  {COL_SPAN_CHOICES.map((n) => (
-                                    <button
-                                      key={n}
-                                      type="button"
-                                      aria-pressed={df.colSpan === n}
-                                      onClick={() => setColSpan(ds.sectionId, df.fieldId, n)}
-                                      data-track={`${slug}.layout.field.colspan`}
-                                      className={`px-2 py-0.5 text-xs ${
-                                        df.colSpan === n
-                                          ? 'bg-primary text-surface'
-                                          : 'bg-surface text-heading hover:bg-background'
-                                      }`}
-                                    >
-                                      {n}
-                                    </button>
-                                  ))}
-                                </div>
+                                <Segmented
+                                  label={`Column span for ${field.label}`}
+                                  options={COL_SPAN_CHOICES}
+                                  value={df.colSpan}
+                                  onChange={(n) => setColSpan(ds.sectionId, df.fieldId, n)}
+                                  dataTrack={`${slug}.layout.field.colspan`}
+                                />
                               </SortableRow>
                             );
                           })}
                         </div>
                       </SortableContext>
-                    </div>
+                    </Panel>
                   </SortableRow>
                 );
               })}
@@ -529,7 +512,7 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
               </div>
             )}
             {activeDrag?.kind === 'section' && sectionById.get(activeDrag.id) && (
-              <div className="rounded border border-border bg-surface px-4 py-3 text-sm font-semibold text-heading">
+              <div className="rounded border border-border bg-surface px-4 py-3 text-sm font-medium text-heading">
                 {sectionById.get(activeDrag.id)?.label}
               </div>
             )}

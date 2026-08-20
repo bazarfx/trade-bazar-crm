@@ -21,6 +21,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { Button, cn } from '@/components/ui';
 
 /**
  * The one drag-to-reorder primitive, shared by the field, status and layout
@@ -115,18 +116,22 @@ export function SortableRow({ id, dataTrack, className, children }: SortableRowP
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`flex items-center gap-2 ${isDragging ? 'opacity-50' : ''} ${className ?? ''}`}
+      className={cn('flex items-center gap-2', isDragging && 'opacity-50', className)}
     >
-      <button
-        type="button"
+      {/* Ghost button, narrowed to the glyph: the handle must not read as an
+          action button beside the row's real actions. `attributes`/`listeners`
+          land in Button's rest spread, so dnd-kit still owns the element. */}
+      <Button
+        variant="ghost"
+        size="sm"
         aria-label="Reorder"
         data-track={dataTrack}
+        className="w-6 cursor-grab px-0 hover:text-heading active:cursor-grabbing"
         {...attributes}
         {...listeners}
-        className="cursor-grab rounded px-1 py-1 text-body hover:text-heading active:cursor-grabbing"
       >
         <span aria-hidden="true">⠿</span>
-      </button>
+      </Button>
       {children}
     </div>
   );

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { STATUS_TAGS, type StatusCreateInput, type StatusTagValue } from '@crm/shared';
 import { ApiClientError } from '@/lib/client-api';
+import { Button, FieldError, FieldLabel, Input, cn } from '@/components/ui';
 import { TAG_NOTES, TagChip, useColorSwatches } from './status-meta';
 
 /**
@@ -22,6 +23,14 @@ interface StatusFormProps {
   onSave: (input: StatusCreateInput) => Promise<void>;
   onCancel: () => void;
 }
+
+/**
+ * A colour swatch is a Button worn as a square of paint: the size classes
+ * override the text metrics because there is no label to set them, and the
+ * selected ring has to beat the inline background the swatch paints on itself.
+ */
+const SWATCH = 'h-8 w-8 shrink-0 border p-0 px-0';
+const SWATCH_SELECTED = 'border-heading ring-2 ring-primary';
 
 export function StatusForm({ slug, initial, mode, onSave, onCancel }: StatusFormProps) {
   // Lowercased once so swatch matching works whatever case the row stores —
@@ -77,23 +86,21 @@ export function StatusForm({ slug, initial, mode, onSave, onCancel }: StatusForm
         </div>
       )}
 
-      <label htmlFor="status-name" className="block text-sm font-medium text-heading">
+      <FieldLabel htmlFor="status-name" required>
         Name
-      </label>
-      <input
+      </FieldLabel>
+      <Input
         id="status-name"
         value={name}
         onChange={(e) => setName(e.target.value)}
         required
         maxLength={60}
         placeholder="e.g. Follow-up scheduled"
+        aria-invalid={nameErrors.length > 0}
         data-track={`${slug}.statuses.form.name.input`}
-        className="mt-1 w-full rounded border border-border bg-surface px-3 py-2 text-sm text-heading outline-none focus:border-primary"
       />
       {nameErrors.map((msg) => (
-        <p key={msg} className="mt-1 text-xs text-error">
-          {msg}
-        </p>
+        <FieldError key={msg}>{msg}</FieldError>
       ))}
       <p className="mt-1 text-xs text-body">Display only — renaming never changes behaviour.</p>
 
@@ -107,9 +114,10 @@ export function StatusForm({ slug, initial, mode, onSave, onCancel }: StatusForm
           {STATUS_TAGS.map((t) => (
             <label
               key={t}
-              className={`flex cursor-pointer items-center gap-3 rounded border px-3 py-2 ${
-                t === tag ? 'border-primary bg-background' : 'border-border bg-surface'
-              }`}
+              className={cn(
+                'flex cursor-pointer items-center gap-3 rounded border px-3 py-2',
+                t === tag ? 'border-primary bg-background' : 'border-border bg-surface',
+              )}
             >
               <input
                 type="radio"
@@ -130,45 +138,44 @@ export function StatusForm({ slug, initial, mode, onSave, onCancel }: StatusForm
       <fieldset className="mt-8">
         <legend className="text-sm font-medium text-heading">Colour</legend>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => setColor(null)}
             aria-label="No colour"
             aria-pressed={color === null}
             title="No colour"
             data-track={`${slug}.statuses.form.color.select`}
-            className={`flex h-8 w-8 items-center justify-center rounded border bg-surface text-xs text-body ${
-              color === null ? 'border-primary ring-1 ring-primary' : 'border-border'
-            }`}
+            className={cn(SWATCH, 'text-body', color === null && SWATCH_SELECTED)}
           >
             —
-          </button>
+          </Button>
           {swatches?.map((s) => (
-            <button
+            // The swatch's fill is the hex the form will persist, so it is
+            // record data rather than a token — see useColorSwatches.
+            <Button
               key={s.token}
-              type="button"
+              variant="secondary"
+              size="sm"
               onClick={() => setColor(s.hex)}
               aria-label={s.label}
               aria-pressed={color === s.hex}
               title={s.label}
               data-track={`${slug}.statuses.form.color.select`}
-              className={`h-8 w-8 rounded border ${
-                color === s.hex ? 'border-heading ring-2 ring-primary' : 'border-border'
-              }`}
+              className={cn(SWATCH, color === s.hex && SWATCH_SELECTED)}
               style={{ backgroundColor: s.hex }}
             />
           ))}
           {customColor !== null && (
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => setColor(customColor)}
               aria-label="Current colour"
               aria-pressed={color === customColor}
               title="Current colour"
               data-track={`${slug}.statuses.form.color.select`}
-              className={`h-8 w-8 rounded border ${
-                color === customColor ? 'border-heading ring-2 ring-primary' : 'border-border'
-              }`}
+              className={cn(SWATCH, color === customColor && SWATCH_SELECTED)}
               style={{ backgroundColor: customColor }}
             />
           )}
@@ -176,22 +183,20 @@ export function StatusForm({ slug, initial, mode, onSave, onCancel }: StatusForm
       </fieldset>
 
       <div className="mt-10 flex items-center gap-3 border-t border-border pt-6">
-        <button
+        <Button
           type="submit"
-          disabled={saving}
+          loading={saving}
           data-track={`${slug}.statuses.${mode}.submit`}
-          className="rounded bg-primary px-4 py-2 text-sm font-medium text-surface hover:opacity-90 disabled:opacity-50"
         >
           {saving ? 'Saving…' : initial ? 'Save changes' : 'Create status'}
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="secondary"
           onClick={onCancel}
           data-track={`${slug}.statuses.form.cancel`}
-          className="rounded border border-border px-4 py-2 text-sm text-heading hover:bg-background"
         >
           Cancel
-        </button>
+        </Button>
       </div>
     </form>
   );

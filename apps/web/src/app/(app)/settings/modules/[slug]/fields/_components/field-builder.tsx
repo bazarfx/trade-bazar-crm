@@ -5,9 +5,10 @@ import { FIELD_TYPES, FIELD_TYPE_SPECS, type FieldType } from '@crm/shared';
 import type { FieldDto } from '@/lib/config/fields';
 import { api } from '@/lib/client-api';
 import { SortableList, SortableRow } from '@/components/config/sortable';
+import { Button, Checkbox, Chip, Panel, PanelHeader } from '@/components/ui';
 import { FieldCreateOverlay } from './field-create-overlay';
 import { FieldEditOverlay } from './field-edit-overlay';
-import { messageOf, smallButtonClass, type SectionDto } from './field-form-shared';
+import { messageOf, type SectionDto } from './field-form-shared';
 
 /**
  * The drag-and-drop field builder (spec §4.4). Palette on the left is the
@@ -195,30 +196,30 @@ export function FieldBuilder({ slug, label }: { slug: string; label: string }) {
   }
 
   if (loading) {
-    return <p className="mt-6 text-sm text-body">Loading fields…</p>;
+    return <p className="text-sm text-body">Loading fields…</p>;
   }
   if (loadError) {
     return (
-      <p role="alert" className="mt-6 rounded bg-error/10 px-3 py-2 text-sm text-error">
+      <p role="alert" className="rounded bg-error/10 px-3 py-2 text-sm text-error">
         {loadError}
       </p>
     );
   }
 
   return (
-    <div className="mt-6">
+    <div>
       {notice && (
         <div className="mb-4 flex items-start justify-between gap-4 rounded border border-warning bg-warning/10 px-3 py-2 text-sm text-heading">
           <p>{notice}</p>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setNotice(null)}
             aria-label="Dismiss notice"
             data-track={`${slug}.fields.notice.dismiss`}
-            className="shrink-0 text-xs text-body hover:text-heading"
           >
             Dismiss
-          </button>
+          </Button>
         </div>
       )}
       {actionError && (
@@ -227,43 +228,41 @@ export function FieldBuilder({ slug, label }: { slug: string; label: string }) {
           className="mb-4 flex items-start justify-between gap-4 rounded bg-error/10 px-3 py-2 text-sm text-error"
         >
           <p>{actionError}</p>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setActionError(null)}
             aria-label="Dismiss error"
             data-track={`${slug}.fields.error.dismiss`}
-            className="shrink-0 text-xs hover:underline"
+            className="text-error hover:bg-error/10"
           >
             Dismiss
-          </button>
+          </Button>
         </div>
       )}
 
       <div className="mb-4 flex justify-end">
-        <label className="flex items-center gap-2 text-sm text-body">
-          <input
-            type="checkbox"
-            checked={showDeleted}
-            onChange={(e) => setShowDeleted(e.target.checked)}
-            data-track={`${slug}.fields.showDeleted.toggle`}
-          />
-          Show deleted fields
-        </label>
+        <Checkbox
+          label="Show deleted fields"
+          checked={showDeleted}
+          onChange={(e) => setShowDeleted(e.target.checked)}
+          data-track={`${slug}.fields.showDeleted.toggle`}
+        />
       </div>
 
       <div className="flex items-start gap-6">
-        <aside className="w-64 shrink-0 rounded border border-border bg-surface">
-          <h2 className="border-b border-border px-4 py-3 text-xs font-medium uppercase tracking-wide text-body">
-            Field palette
-          </h2>
+        {/* w-filters: the palette is the same rail width as the list screen's
+            filter panel, so the two screens share one column grid. */}
+        <Panel className="w-filters shrink-0">
+          <PanelHeader title="Field palette" className="px-4 py-3" />
           <div className="p-2">
             {CREATABLE_TYPES.map((t) => (
-              <button
+              <Button
                 key={t}
-                type="button"
+                variant="ghost"
                 onClick={() => setOverlay({ mode: 'create', type: t })}
                 data-track={`${slug}.fields.palette.add`}
-                className="flex w-full items-center justify-between gap-2 rounded px-3 py-2 text-left text-sm text-heading hover:bg-background"
+                className="w-full justify-between text-heading"
               >
                 <span className="truncate" title={FIELD_TYPE_SPECS[t].label}>
                   {FIELD_TYPE_SPECS[t].label}
@@ -271,22 +270,23 @@ export function FieldBuilder({ slug, label }: { slug: string; label: string }) {
                 <span aria-hidden="true" className="shrink-0 text-body">
                   +
                 </span>
-              </button>
+              </Button>
             ))}
           </div>
-        </aside>
+        </Panel>
 
         <div className="min-w-0 flex-1 space-y-4">
           {groups.map((g) => (
-            <section key={g.key} className="rounded border border-border bg-surface">
-              <header className="flex items-center justify-between border-b border-border px-4 py-3">
-                <h2 className="truncate text-sm font-semibold text-heading" title={g.label}>
-                  {g.label}
-                </h2>
-                <span className="shrink-0 text-xs text-body">
-                  {g.active.length} field{g.active.length === 1 ? '' : 's'}
-                </span>
-              </header>
+            <Panel key={g.key}>
+              <PanelHeader
+                title={g.label}
+                className="px-4 py-3"
+                actions={
+                  <span className="text-xs text-body">
+                    {g.active.length} field{g.active.length === 1 ? '' : 's'}
+                  </span>
+                }
+              />
               <div className="p-2">
                 {g.active.length === 0 && (
                   <p className="px-3 py-2 text-sm text-body">
@@ -304,14 +304,14 @@ export function FieldBuilder({ slug, label }: { slug: string; label: string }) {
                       dataTrack={`${slug}.fields.row.reorder`}
                       className="rounded hover:bg-background"
                     >
-                      <button
-                        type="button"
+                      <Button
+                        variant="ghost"
                         onClick={() => setOverlay({ mode: 'edit', field: f })}
                         data-track={`${slug}.fields.row.open`}
-                        className="flex min-w-0 flex-1 items-center gap-3 rounded px-2 py-2 text-left"
+                        className="min-w-0 flex-1 justify-start gap-3 px-2 text-left font-normal"
                       >
                         <FieldRowSummary field={f} />
-                      </button>
+                      </Button>
                     </SortableRow>
                   )}
                 />
@@ -322,19 +322,19 @@ export function FieldBuilder({ slug, label }: { slug: string; label: string }) {
                       <span className="w-6 shrink-0" aria-hidden="true" />
                       <div className="flex min-w-0 flex-1 items-center gap-3 px-2 py-2">
                         <FieldRowSummary field={f} />
-                        <button
-                          type="button"
+                        <Button
+                          variant="secondary"
+                          size="sm"
                           onClick={() => void handleRestore(f.id)}
                           data-track={`${slug}.fields.restore.click`}
-                          className={`shrink-0 ${smallButtonClass}`}
                         >
                           Restore
-                        </button>
+                        </Button>
                       </div>
                     </div>
                   ))}
               </div>
-            </section>
+            </Panel>
           ))}
         </div>
       </div>
@@ -364,18 +364,6 @@ export function FieldBuilder({ slug, label }: { slug: string; label: string }) {
   );
 }
 
-function Badge({ tone = 'neutral', children }: { tone?: 'neutral' | 'error'; children: React.ReactNode }) {
-  return (
-    <span
-      className={`rounded-pill border px-2 py-0.5 text-xs font-medium ${
-        tone === 'error' ? 'border-error text-error' : 'border-border text-body'
-      }`}
-    >
-      {children}
-    </span>
-  );
-}
-
 /** One row's content, shared by live (sortable, clickable) and deleted rows. */
 function FieldRowSummary({ field }: { field: FieldDto }) {
   const spec = FIELD_TYPE_SPECS[field.type];
@@ -391,10 +379,10 @@ function FieldRowSummary({ field }: { field: FieldDto }) {
         {field.key}
       </span>
       <span className="flex shrink-0 items-center gap-1">
-        {field.isRequired && <Badge>Required</Badge>}
-        {field.isUnique && <Badge>Unique</Badge>}
-        {field.isSystem && <Badge>System</Badge>}
-        {field.isDeleted && <Badge tone="error">Deleted</Badge>}
+        {field.isRequired && <Chip>Required</Chip>}
+        {field.isUnique && <Chip>Unique</Chip>}
+        {field.isSystem && <Chip>System</Chip>}
+        {field.isDeleted && <Chip tone="error">Deleted</Chip>}
       </span>
     </>
   );

@@ -3,6 +3,7 @@
 import type { FieldValues, Path, UseFormRegisterReturn, UseFormSetError } from 'react-hook-form';
 import type { FieldCreateInput, StorageKind } from '@crm/shared';
 import type { ApiClientError } from '@/lib/client-api';
+import { Button, FieldError, FieldLabel, Input, Select } from '@/components/ui';
 
 /**
  * Pieces shared by the create and the edit overlay. The two overlays keep
@@ -24,14 +25,6 @@ export interface SectionDto {
  *  can never drift from what the server accepts. */
 export type ValidationRules = NonNullable<FieldCreateInput['validation']>;
 export type ValidationRuleName = keyof ValidationRules;
-
-// One look for every input in both overlays — mirrors the login form.
-export const inputClass =
-  'w-full rounded border border-border bg-surface px-3 py-2 text-sm text-heading outline-none focus:border-primary disabled:opacity-60';
-export const labelClass = 'mb-1.5 block text-sm font-medium text-heading';
-export const fieldErrorClass = 'mt-1 text-xs text-error';
-export const smallButtonClass =
-  'rounded border border-border px-2 py-1 text-xs text-heading hover:bg-background disabled:opacity-40';
 
 export function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : 'Something went wrong';
@@ -89,6 +82,15 @@ export function applyServerFieldErrors<T extends FieldValues>(
   return true;
 }
 
+/**
+ * A fieldset's caption. `FieldLabel` renders a <label>, which is invalid as a
+ * fieldset caption — only <legend> is — so this mirrors its type instead of
+ * bending the primitive into an element it is not.
+ */
+export function FieldsetLegend({ children }: { children: React.ReactNode }) {
+  return <legend className="mb-1.5 block text-sm font-medium text-heading">{children}</legend>;
+}
+
 /** The login form's non-field error banner, verbatim. */
 export function FormErrorBanner({ message }: { message: string | null }) {
   if (!message) return null;
@@ -114,14 +116,11 @@ export function SectionSelect({ slug, sections, reg, error }: SectionSelectProps
   if (sections.length === 0) return null;
   return (
     <div className="mt-6">
-      <label htmlFor="field-section" className={labelClass}>
-        Section
-      </label>
-      <select
+      <FieldLabel htmlFor="field-section">Section</FieldLabel>
+      <Select
         id="field-section"
         data-track={`${slug}.fields.section.input`}
         aria-invalid={!!error}
-        className={inputClass}
         {...reg}
       >
         {sections.map((s) => (
@@ -129,12 +128,8 @@ export function SectionSelect({ slug, sections, reg, error }: SectionSelectProps
             {s.label}
           </option>
         ))}
-      </select>
-      {error && (
-        <p role="alert" className={fieldErrorClass}>
-          {error}
-        </p>
-      )}
+      </Select>
+      <FieldError>{error}</FieldError>
     </div>
   );
 }
@@ -169,24 +164,21 @@ function RuleInput({
 }) {
   return (
     <div>
+      {/* A rule is a sub-control of the Validation fieldset, so its label is
+          deliberately quieter than the FieldLabel above the fieldset. */}
       <label htmlFor={id} className="mb-1 block text-xs text-body">
         {label}
       </label>
-      <input
+      <Input
         id={id}
         type={type}
         step={type === 'number' ? 'any' : undefined}
         disabled={disabled}
         data-track={`${slug}.fields.validation.input`}
         aria-invalid={!!error}
-        className={inputClass}
         {...reg}
       />
-      {error && (
-        <p role="alert" className={fieldErrorClass}>
-          {error}
-        </p>
-      )}
+      <FieldError>{error}</FieldError>
     </div>
   );
 }
@@ -198,7 +190,7 @@ export function ValidationEditor({ slug, storage, reg, errorFor, disabled }: Val
 
   return (
     <fieldset className="mt-6">
-      <legend className={labelClass}>Validation</legend>
+      <FieldsetLegend>Validation</FieldsetLegend>
       {storage === 'number' ? (
         <div className="grid grid-cols-2 gap-4">
           <RuleInput slug={slug} id="field-validation-min" label="Minimum" type="number" reg={reg('min')} error={errorFor('min')} disabled={disabled} />
@@ -254,25 +246,20 @@ export function OptionsEditor({
 }: OptionsEditorProps) {
   return (
     <fieldset className="mt-6">
-      <legend className={labelClass}>Options</legend>
+      <FieldsetLegend>Options</FieldsetLegend>
       <div className="space-y-2">
         {rows.map((row, i) => (
           <div key={row.key} className="flex items-start gap-2">
             <div className="min-w-0 flex-1">
-              <input
+              <Input
                 aria-label="Option label"
                 placeholder="Option label"
                 disabled={disabled}
                 data-track={`${slug}.fields.option.input`}
                 aria-invalid={!!labelErrorAt(i)}
-                className={inputClass}
                 {...regLabel(i)}
               />
-              {labelErrorAt(i) && (
-                <p role="alert" className={fieldErrorClass}>
-                  {labelErrorAt(i)}
-                </p>
-              )}
+              <FieldError>{labelErrorAt(i)}</FieldError>
               {/* Stored values are immutable — records reference them forever —
                   so an existing option shows its value instead of an input. */}
               {row.value !== undefined && (
@@ -282,71 +269,68 @@ export function OptionsEditor({
               )}
             </div>
             <div className="w-32 shrink-0">
-              <input
+              <Input
                 aria-label="Option colour"
                 placeholder="#RRGGBB"
                 disabled={disabled}
                 data-track={`${slug}.fields.option.input`}
                 aria-invalid={!!colorErrorAt(i)}
-                className={inputClass}
                 {...regColor(i)}
               />
-              {colorErrorAt(i) && (
-                <p role="alert" className={fieldErrorClass}>
-                  {colorErrorAt(i)}
-                </p>
-              )}
+              <FieldError>{colorErrorAt(i)}</FieldError>
             </div>
             {!disabled && (
-              <div className="flex shrink-0 gap-1 pt-2">
-                <button
-                  type="button"
+              // w-8 px-0: three glyph-only buttons beside a 36px input, kept
+              // square rather than taking the 12px text padding.
+              <div className="flex shrink-0 gap-1">
+                <Button
+                  variant="secondary"
+                  size="sm"
                   aria-label="Move option up"
                   disabled={i === 0}
                   onClick={() => onMove(i, i - 1)}
                   data-track={`${slug}.fields.option.reorder`}
-                  className={smallButtonClass}
+                  className="h-9 w-8 px-0"
                 >
                   ↑
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
                   aria-label="Move option down"
                   disabled={i === rows.length - 1}
                   onClick={() => onMove(i, i + 1)}
                   data-track={`${slug}.fields.option.reorder`}
-                  className={smallButtonClass}
+                  className="h-9 w-8 px-0"
                 >
                   ↓
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
                   aria-label="Remove option"
                   onClick={() => onRemove(i)}
                   data-track={`${slug}.fields.option.remove`}
-                  className={smallButtonClass}
+                  className="h-9 w-8 px-0"
                 >
                   ✕
-                </button>
+                </Button>
               </div>
             )}
           </div>
         ))}
       </div>
-      {listError && (
-        <p role="alert" className={fieldErrorClass}>
-          {listError}
-        </p>
-      )}
+      <FieldError>{listError}</FieldError>
       {!disabled && (
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={onAdd}
           data-track={`${slug}.fields.option.add`}
-          className="mt-2 rounded border border-border px-3 py-1.5 text-sm text-heading hover:bg-background"
+          className="mt-2"
         >
           + Add option
-        </button>
+        </Button>
       )}
     </fieldset>
   );

@@ -12,15 +12,13 @@ import {
 import type { FieldDto } from '@/lib/config/fields';
 import { api, ApiClientError } from '@/lib/client-api';
 import { FullScreenOverlay } from '@/components/overlay/full-screen-overlay';
+import { Button, Checkbox, FieldError, FieldLabel, Input, Textarea } from '@/components/ui';
 import {
   FormErrorBanner,
   OptionsEditor,
   SectionSelect,
   ValidationEditor,
   applyServerFieldErrors,
-  fieldErrorClass,
-  inputClass,
-  labelClass,
   messageOf,
   numberOrUndefined,
   pruneValidation,
@@ -159,22 +157,17 @@ export function FieldEditOverlay({
           {spec.label} · <span className="font-mono">{field.key}</span>
         </p>
 
-        <label htmlFor="field-label" className={`${labelClass} mt-4`}>
+        <FieldLabel htmlFor="field-label" className="mt-4" required>
           Label
-        </label>
-        <input
+        </FieldLabel>
+        <Input
           id="field-label"
           autoFocus
           data-track={`${slug}.fields.label.input`}
           aria-invalid={!!errors.label}
-          className={inputClass}
           {...register('label')}
         />
-        {errors.label && (
-          <p role="alert" className={fieldErrorClass}>
-            {errors.label.message}
-          </p>
-        )}
+        <FieldError>{errors.label?.message}</FieldError>
 
         <SectionSelect
           slug={slug}
@@ -183,34 +176,26 @@ export function FieldEditOverlay({
           error={errors.sectionId?.message}
         />
 
-        <label htmlFor="field-help" className={`${labelClass} mt-6`}>
+        <FieldLabel htmlFor="field-help" className="mt-6">
           Help text
-        </label>
-        <textarea
+        </FieldLabel>
+        <Textarea
           id="field-help"
           rows={2}
           data-track={`${slug}.fields.helpText.input`}
           aria-invalid={!!errors.helpText}
-          className={inputClass}
           {...register('helpText')}
         />
-        {errors.helpText && (
-          <p role="alert" className={fieldErrorClass}>
-            {errors.helpText.message}
-          </p>
-        )}
+        <FieldError>{errors.helpText?.message}</FieldError>
 
         <div className="mt-6">
-          <label htmlFor="field-required" className="flex items-center gap-2 text-sm text-heading">
-            <input
-              id="field-required"
-              type="checkbox"
-              disabled={locked}
-              data-track={`${slug}.fields.isRequired.input`}
-              {...register('isRequired')}
-            />
-            Required
-          </label>
+          <Checkbox
+            id="field-required"
+            label="Required"
+            disabled={locked}
+            data-track={`${slug}.fields.isRequired.input`}
+            {...register('isRequired')}
+          />
         </div>
 
         {locked && (
@@ -250,7 +235,7 @@ export function FieldEditOverlay({
 
         {dependencies && (
           <div className="mt-6 rounded border border-error bg-error/10 p-4">
-            <h3 className="text-sm font-semibold text-heading">
+            <h3 className="text-sm font-medium text-heading">
               Deleting “{field.label}” affects:
             </h3>
             {dependencies.views.length > 0 && (
@@ -287,48 +272,49 @@ export function FieldEditOverlay({
               The field disappears from forms; historical values stay on records and in the
               timeline.
             </p>
-            <button
-              type="button"
+            {/* The one solid-error button in the product: confirming a
+                destructive act after the guardrail report has been read. */}
+            <Button
+              size="sm"
+              loading={deleteBusy}
               onClick={() => requestDelete(true)}
-              disabled={deleteBusy}
               data-track={`${slug}.fields.delete.confirm`}
-              className="mt-3 rounded bg-error px-3 py-1.5 text-sm font-medium text-surface disabled:opacity-60"
+              className="mt-3 border border-error bg-error text-surface hover:bg-error/90"
             >
               {deleteBusy ? 'Deleting…' : 'Delete anyway'}
-            </button>
+            </Button>
           </div>
         )}
 
         <FormErrorBanner message={formError} />
 
         <div className="mt-8 flex items-center gap-3 border-t border-border pt-6">
-          <button
+          <Button
             type="submit"
-            disabled={isSubmitting || deleteBusy}
+            disabled={deleteBusy}
+            loading={isSubmitting}
             data-track={`${slug}.fields.submit.click`}
-            className="rounded bg-primary px-4 py-2 text-sm font-medium text-surface disabled:opacity-60"
           >
             {isSubmitting ? 'Saving…' : 'Save field'}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="secondary"
             onClick={onClose}
             data-track={`${slug}.fields.cancel.click`}
-            className="rounded border border-border px-4 py-2 text-sm text-heading hover:bg-background"
           >
             Cancel
-          </button>
+          </Button>
           <span className="flex-1" aria-hidden="true" />
           {!locked && !dependencies && (
-            <button
-              type="button"
+            <Button
+              variant="destructive"
+              disabled={isSubmitting}
+              loading={deleteBusy}
               onClick={() => requestDelete(false)}
-              disabled={deleteBusy || isSubmitting}
               data-track={`${slug}.fields.delete.click`}
-              className="rounded border border-error px-4 py-2 text-sm font-medium text-error hover:bg-error/10 disabled:opacity-60"
             >
               {deleteBusy ? 'Deleting…' : 'Delete field'}
-            </button>
+            </Button>
           )}
         </div>
       </form>

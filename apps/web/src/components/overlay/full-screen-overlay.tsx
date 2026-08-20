@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { Button } from '@/components/ui';
 import { useOverlayStack } from './overlay-context';
 
 /**
@@ -99,17 +100,22 @@ export function FullScreenOverlay({ title, onClose, trackPrefix, children }: Ful
       onKeyDown={trapTab}
       className="fixed inset-0 z-50 flex flex-col bg-background outline-none"
     >
-      <header className="flex shrink-0 items-center justify-between border-b border-border bg-surface px-8 py-4">
-        <h2 className="text-lg font-semibold text-heading">{title}</h2>
-        <button
-          type="button"
+      {/* White chrome over the canvas, as every framed screen draws it: the
+          body below stays bg-background so a form reads as the page, not as a
+          card floating on one. */}
+      <header className="flex h-16 shrink-0 items-center justify-between gap-6 border-b border-border bg-surface px-6">
+        {/* truncate: an overlay title carries an Admin-authored module or
+            status name and has no length limit. */}
+        <h2 className="min-w-0 truncate text-lg font-medium text-heading">{title}</h2>
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => onCloseRef.current()}
           aria-label="Close"
           data-track={`${trackPrefix}.overlay.close`}
-          className="rounded border border-border px-3 py-1.5 text-sm text-heading hover:bg-background"
         >
           Close
-        </button>
+        </Button>
       </header>
       <div className="flex-1 overflow-y-auto">{children}</div>
     </div>,

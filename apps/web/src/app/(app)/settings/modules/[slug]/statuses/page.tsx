@@ -33,11 +33,16 @@ export default async function StatusSettingsPage({
   if (!module) notFound();
 
   return (
-    <div className="mx-auto max-w-[1440px] px-8 py-10">
-      <h1 className="text-xl font-semibold text-heading">{module.labelPlural} — statuses</h1>
-      <p className="mt-1 text-sm text-body">
-        Drag to set pipeline order. System behaviour follows the tag, never the name — rename freely.
-      </p>
+    // The shell's <main> owns the canvas gutter; a second page-level one put
+    // every settings screen on a different grid from the module list.
+    <div className="flex flex-col gap-6">
+      <div>
+        <h1 className="text-title font-medium text-heading">{module.labelPlural} — statuses</h1>
+        <p className="mt-1 text-sm text-body">
+          Drag to set pipeline order. System behaviour follows the tag, never the name — rename
+          freely.
+        </p>
+      </div>
       <StatusManager slug={slug} />
     </div>
   );

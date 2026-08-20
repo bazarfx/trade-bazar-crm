@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { StatusCreateInput } from '@crm/shared';
 import { FullScreenOverlay } from '@/components/overlay/full-screen-overlay';
 import { SortableList, SortableRow } from '@/components/config/sortable';
+import { Button, Chip, FieldLabel, Panel, Select } from '@/components/ui';
 import { api, ApiClientError } from '@/lib/client-api';
 import type { StatusDto } from '@/lib/config/statuses';
 import { StatusForm } from './status-form';
@@ -109,21 +110,22 @@ export function StatusManager({ slug }: { slug: string }) {
   }
 
   return (
-    <div className="mt-6">
+    <div>
       {banner !== null && (
         <div
           role="alert"
           className="mb-4 flex items-start justify-between gap-4 rounded border border-error bg-surface px-4 py-3 text-sm text-error"
         >
           <span>{banner}</span>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setBanner(null)}
             data-track={`${slug}.statuses.banner.dismiss`}
-            className="shrink-0 text-body hover:text-heading"
+            className="text-error hover:bg-error/10"
           >
             Dismiss
-          </button>
+          </Button>
         </div>
       )}
 
@@ -133,17 +135,15 @@ export function StatusManager({ slug }: { slug: string }) {
             ? 'Loading…'
             : `${statuses.length} active status${statuses.length === 1 ? '' : 'es'}`}
         </p>
-        <button
-          type="button"
+        <Button
           onClick={() => setOverlay({ kind: 'create' })}
           data-track={`${slug}.statuses.create.open`}
-          className="rounded bg-primary px-4 py-2 text-sm font-medium text-surface hover:opacity-90"
         >
           New status
-        </button>
+        </Button>
       </div>
 
-      <div className="mt-4 rounded border border-border bg-surface">
+      <Panel className="mt-4">
         {statuses === null ? (
           <p className="px-4 py-6 text-sm text-body">Loading statuses…</p>
         ) : statuses.length === 0 ? (
@@ -160,36 +160,33 @@ export function StatusManager({ slug }: { slug: string }) {
                 dataTrack={`${slug}.statuses.row.reorder`}
                 className="border-b border-border px-3 py-2 last:border-0"
               >
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
                   onClick={() => setOverlay({ kind: 'edit', status: s })}
                   data-track={`${slug}.statuses.row.open`}
-                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                  className="min-w-0 flex-1 justify-start gap-3 px-0 text-left font-normal"
                 >
                   <ColorDot color={s.color} />
                   <span className="truncate text-sm text-heading" title={s.name}>
                     {s.name}
                   </span>
                   <TagChip tag={s.tag} />
-                  {s.isSystem && (
-                    <span className="shrink-0 rounded-pill border border-border bg-background px-2 py-0.5 text-xs text-body">
-                      System
-                    </span>
-                  )}
-                </button>
-                <button
-                  type="button"
+                  {s.isSystem && <Chip>System</Chip>}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={() => handleRowDelete(s)}
                   data-track={`${slug}.statuses.row.delete`}
-                  className="shrink-0 rounded px-2 py-1 text-xs text-body hover:text-error"
+                  className="hover:text-error"
                 >
                   Delete
-                </button>
+                </Button>
               </SortableRow>
             )}
           />
         )}
-      </div>
+      </Panel>
 
       {overlay?.kind === 'create' && (
         <FullScreenOverlay
@@ -292,15 +289,14 @@ function DeleteOverlay({
           </div>
         )}
 
-        <label htmlFor="replacement-status" className="mt-6 block text-sm font-medium text-heading">
+        <FieldLabel htmlFor="replacement-status" className="mt-6" required>
           Replacement status
-        </label>
-        <select
+        </FieldLabel>
+        <Select
           id="replacement-status"
           value={replacementId}
           onChange={(e) => setReplacementId(e.target.value)}
           data-track={`${slug}.statuses.delete.replacement.select`}
-          className="mt-1 w-full rounded border border-border bg-surface px-3 py-2 text-sm text-heading outline-none focus:border-primary"
         >
           <option value="">Choose a replacement…</option>
           {others.map((s) => (
@@ -308,26 +304,27 @@ function DeleteOverlay({
               {s.name} ({s.tag})
             </option>
           ))}
-        </select>
+        </Select>
 
         <div className="mt-8 flex items-center gap-3 border-t border-border pt-6">
-          <button
-            type="button"
+          {/* Solid error fill, not the outlined destructive variant: this is
+              the confirm step of a delete the server already refused once. */}
+          <Button
+            disabled={replacementId === ''}
+            loading={busy}
             onClick={confirm}
-            disabled={replacementId === '' || busy}
             data-track={`${slug}.statuses.delete.confirm`}
-            className="rounded bg-error px-4 py-2 text-sm font-medium text-surface hover:opacity-90 disabled:opacity-50"
+            className="border border-error bg-error text-surface hover:bg-error/90"
           >
             {busy ? 'Deleting…' : 'Delete and reassign'}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="secondary"
             onClick={onClose}
             data-track={`${slug}.statuses.delete.cancel`}
-            className="rounded border border-border px-4 py-2 text-sm text-heading hover:bg-background"
           >
             Cancel
-          </button>
+          </Button>
         </div>
       </div>
     </FullScreenOverlay>

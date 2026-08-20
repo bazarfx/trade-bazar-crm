@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { SYSTEM_TAGS, type StatusTagValue } from '@crm/shared';
+import { Chip, cn } from '@/components/ui';
 
 /**
  * Presentation facts shared by the status list and the status form.
@@ -85,14 +86,19 @@ export function useColorSwatches(): ColorSwatch[] | null {
 export function TagChip({ tag }: { tag: StatusTagValue }) {
   const carriesBehaviour = (SYSTEM_TAGS as readonly StatusTagValue[]).includes(tag);
   return (
-    <span
+    // A square-cornered Chip: the pill shape belongs to a status NAME, and the
+    // tag has to stay visually distinct from the name it sits beside.
+    <Chip
       title={TAG_NOTES[tag]}
-      className={`shrink-0 rounded border px-1.5 py-0.5 text-xs font-semibold tracking-wide ${
-        carriesBehaviour ? 'border-primary text-primary' : 'border-border text-body'
-      }`}
+      className={cn(
+        'shrink-0 rounded',
+        // Teal is not a Chip tone — it is the brand, spent here on the two
+        // tags that actually drive the webhook pipeline.
+        carriesBehaviour && 'border-primary bg-surface text-primary',
+      )}
     >
       {tag}
-    </span>
+    </Chip>
   );
 }
 

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { loginSchema, type LoginInput } from '@crm/shared';
+import { Button, FieldError, FieldLabel, Input } from '@/components/ui';
 
 export function LoginForm({ redirectTo }: { redirectTo: string }) {
   const router = useRouter();
@@ -40,42 +41,30 @@ export function LoginForm({ redirectTo }: { redirectTo: string }) {
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} noValidate>
-      <label htmlFor="email" className="mb-1.5 block text-sm font-medium text-heading">
-        Email
-      </label>
-      <input
+      <FieldLabel htmlFor="email">Email</FieldLabel>
+      <Input
         id="email"
         type="email"
         autoComplete="username"
         autoFocus
         data-track="auth.login.email.input"
         aria-invalid={!!errors.email}
-        className="mb-1 w-full rounded border border-border bg-surface px-3 py-2 text-sm text-heading outline-none focus:border-primary"
         {...register('email')}
       />
-      {errors.email && (
-        <p role="alert" className="mb-3 text-xs text-error">
-          {errors.email.message}
-        </p>
-      )}
+      <FieldError>{errors.email?.message}</FieldError>
 
-      <label htmlFor="password" className="mb-1.5 mt-4 block text-sm font-medium text-heading">
+      <FieldLabel htmlFor="password" className="mt-4">
         Password
-      </label>
-      <input
+      </FieldLabel>
+      <Input
         id="password"
         type="password"
         autoComplete="current-password"
         data-track="auth.login.password.input"
         aria-invalid={!!errors.password}
-        className="mb-1 w-full rounded border border-border bg-surface px-3 py-2 text-sm text-heading outline-none focus:border-primary"
         {...register('password')}
       />
-      {errors.password && (
-        <p role="alert" className="mb-3 text-xs text-error">
-          {errors.password.message}
-        </p>
-      )}
+      <FieldError>{errors.password?.message}</FieldError>
 
       {formError && (
         <p role="alert" className="mt-4 rounded bg-error/10 px-3 py-2 text-xs text-error">
@@ -83,14 +72,14 @@ export function LoginForm({ redirectTo }: { redirectTo: string }) {
         </p>
       )}
 
-      <button
+      <Button
         type="submit"
-        disabled={isSubmitting}
+        loading={isSubmitting}
         data-track="auth.login.submit.click"
-        className="mt-6 w-full rounded bg-primary px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
+        className="mt-6 w-full"
       >
         {isSubmitting ? 'Signing in…' : 'Sign in'}
-      </button>
+      </Button>
     </form>
   );
 }

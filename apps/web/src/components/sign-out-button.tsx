@@ -1,18 +1,33 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 
-export function SignOutButton() {
+/**
+ * Signing out is one behaviour with two skins — a bordered button on the
+ * "no modules enabled" page, a nav row in the app shell. The behaviour lives
+ * here so the shell cannot end up with a logout that forgets to revoke the
+ * refresh token or forgets `router.refresh()` (without which the server
+ * components of the signed-in shell stay cached after the cookies are gone).
+ */
+export function useSignOut(): { signOut: () => void; busy: boolean } {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
 
-  async function signOut() {
+  const signOut = useCallback(() => {
     setBusy(true);
-    await fetch('/api/auth/logout', { method: 'POST' });
-    router.replace('/login');
-    router.refresh();
-  }
+    void (async () => {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      router.replace('/login');
+      router.refresh();
+    })();
+  }, [router]);
+
+  return { signOut, busy };
+}
+
+export function SignOutButton() {
+  const { signOut, busy } = useSignOut();
 
   return (
     <button

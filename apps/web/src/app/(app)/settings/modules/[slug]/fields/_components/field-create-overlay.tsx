@@ -13,15 +13,13 @@ import {
 import type { FieldDto } from '@/lib/config/fields';
 import { api, ApiClientError } from '@/lib/client-api';
 import { FullScreenOverlay } from '@/components/overlay/full-screen-overlay';
+import { Button, Checkbox, FieldError, FieldLabel, Input, Select, Textarea } from '@/components/ui';
 import {
   FormErrorBanner,
   OptionsEditor,
   SectionSelect,
   ValidationEditor,
   applyServerFieldErrors,
-  fieldErrorClass,
-  inputClass,
-  labelClass,
   messageOf,
   numberOrUndefined,
   pruneValidation,
@@ -128,31 +126,25 @@ export function FieldCreateOverlay({
   return (
     <FullScreenOverlay title={`New field — ${moduleLabel}`} onClose={onClose} trackPrefix={`${slug}.fields`}>
       <form onSubmit={handleSubmit(onSubmit)} noValidate className="mx-auto max-w-3xl px-8 py-8">
-        <label htmlFor="field-label" className={labelClass}>
+        <FieldLabel htmlFor="field-label" required>
           Label
-        </label>
-        <input
+        </FieldLabel>
+        <Input
           id="field-label"
           autoFocus
           data-track={`${slug}.fields.label.input`}
           aria-invalid={!!errors.label}
-          className={inputClass}
           {...register('label')}
         />
-        {errors.label && (
-          <p role="alert" className={fieldErrorClass}>
-            {errors.label.message}
-          </p>
-        )}
+        <FieldError>{errors.label?.message}</FieldError>
 
-        <label htmlFor="field-type" className={`${labelClass} mt-6`}>
+        <FieldLabel htmlFor="field-type" className="mt-6">
           Type
-        </label>
-        <select
+        </FieldLabel>
+        <Select
           id="field-type"
           data-track={`${slug}.fields.type.input`}
           aria-invalid={!!errors.type}
-          className={inputClass}
           {...register('type')}
         >
           {CREATABLE_TYPES.map((t) => (
@@ -160,12 +152,8 @@ export function FieldCreateOverlay({
               {FIELD_TYPE_SPECS[t].label}
             </option>
           ))}
-        </select>
-        {errors.type && (
-          <p role="alert" className={fieldErrorClass}>
-            {errors.type.message}
-          </p>
-        )}
+        </Select>
+        <FieldError>{errors.type?.message}</FieldError>
 
         <SectionSelect
           slug={slug}
@@ -174,53 +162,43 @@ export function FieldCreateOverlay({
           error={errors.sectionId?.message}
         />
 
-        <label htmlFor="field-help" className={`${labelClass} mt-6`}>
+        <FieldLabel htmlFor="field-help" className="mt-6">
           Help text
-        </label>
-        <textarea
+        </FieldLabel>
+        <Textarea
           id="field-help"
           rows={2}
           data-track={`${slug}.fields.helpText.input`}
           aria-invalid={!!errors.helpText}
-          className={inputClass}
           {...register('helpText')}
         />
-        {errors.helpText && (
-          <p role="alert" className={fieldErrorClass}>
-            {errors.helpText.message}
-          </p>
-        )}
+        <FieldError>{errors.helpText?.message}</FieldError>
 
-        <div className="mt-6 flex flex-wrap gap-8">
-          <label htmlFor="field-required" className="flex items-center gap-2 text-sm text-heading">
-            <input
-              id="field-required"
-              type="checkbox"
-              data-track={`${slug}.fields.isRequired.input`}
-              {...register('isRequired')}
-            />
-            Required
-          </label>
-          <label
-            htmlFor="field-unique"
-            className={`flex items-center gap-2 text-sm ${spec.canBeUnique ? 'text-heading' : 'text-body'}`}
-          >
-            <input
-              id="field-unique"
-              type="checkbox"
-              disabled={!spec.canBeUnique}
-              data-track={`${slug}.fields.isUnique.input`}
-              {...register('isUnique')}
-            />
-            Unique
-            {!spec.canBeUnique && <span className="text-xs">({spec.label} fields cannot be unique)</span>}
-          </label>
+        <div className="mt-6 flex flex-wrap items-center gap-8">
+          <Checkbox
+            id="field-required"
+            label="Required"
+            data-track={`${slug}.fields.isRequired.input`}
+            {...register('isRequired')}
+          />
+          <Checkbox
+            id="field-unique"
+            disabled={!spec.canBeUnique}
+            data-track={`${slug}.fields.isUnique.input`}
+            label={
+              <>
+                Unique
+                {!spec.canBeUnique && (
+                  <span className="ml-1 text-xs text-body">
+                    ({spec.label} fields cannot be unique)
+                  </span>
+                )}
+              </>
+            }
+            {...register('isUnique')}
+          />
         </div>
-        {errors.isUnique && (
-          <p role="alert" className={fieldErrorClass}>
-            {errors.isUnique.message}
-          </p>
-        )}
+        <FieldError>{errors.isUnique?.message}</FieldError>
 
         {spec.hasOptions && (
           <OptionsEditor
@@ -251,22 +229,20 @@ export function FieldCreateOverlay({
         <FormErrorBanner message={formError} />
 
         <div className="mt-8 flex items-center gap-3 border-t border-border pt-6">
-          <button
+          <Button
             type="submit"
-            disabled={isSubmitting}
+            loading={isSubmitting}
             data-track={`${slug}.fields.submit.click`}
-            className="rounded bg-primary px-4 py-2 text-sm font-medium text-surface disabled:opacity-60"
           >
             {isSubmitting ? 'Saving…' : 'Create field'}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="secondary"
             onClick={onClose}
             data-track={`${slug}.fields.cancel.click`}
-            className="rounded border border-border px-4 py-2 text-sm text-heading hover:bg-background"
           >
             Cancel
-          </button>
+          </Button>
         </div>
       </form>
     </FullScreenOverlay>

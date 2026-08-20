@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { prisma } from '@crm/db';
 import { getPrincipal } from '@/lib/auth/session';
+import { Panel } from '@/components/ui';
 
 /**
  * Settings landing: every enabled module with a door into its three builders.
@@ -37,31 +38,43 @@ export default async function ModulesSettingsPage() {
   });
 
   return (
-    <div className="mx-auto max-w-[1440px] px-8 py-10">
-      <h1 className="text-xl font-semibold text-heading">Module settings</h1>
-      <p className="mt-1 text-sm text-body">
-        Fields, statuses and layouts for every enabled module.
-      </p>
+    // No page-level max width or padding: the shell's <main> already sets the
+    // canvas gutter, and a second one here made every settings screen sit on a
+    // different grid from the module list.
+    <div className="flex flex-col gap-6">
+      <div>
+        <h1 className="text-title font-medium text-heading">Module settings</h1>
+        <p className="mt-1 text-sm text-body">
+          Fields, statuses and layouts for every enabled module.
+        </p>
+      </div>
 
-      <section className="mt-6 rounded border border-border bg-surface">
+      {/* Not <DataTable>: that primitive takes render callbacks, which cannot
+          cross the server-component boundary this page renders on. The row
+          metrics below are its metrics, so the two screens still match. */}
+      <Panel className="overflow-hidden">
         <table className="w-full text-left text-sm">
           <thead>
-            <tr className="border-b border-border text-xs uppercase tracking-wide text-body">
-              <th className="px-6 py-3 font-medium">Module</th>
-              <th className="px-6 py-3 font-medium">Slug</th>
-              <th className="px-6 py-3 font-medium">Fields</th>
-              <th className="px-6 py-3 font-medium">Statuses</th>
-              <th className="px-6 py-3 font-medium">Configure</th>
+            <tr>
+              {['Module', 'Slug', 'Fields', 'Statuses', 'Configure'].map((h) => (
+                <th
+                  key={h}
+                  scope="col"
+                  className="h-11 border-b border-border bg-background px-6 text-xs font-medium text-body"
+                >
+                  {h}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
             {modules.map((m) => (
-              <tr key={m.slug} className="border-b border-border last:border-0">
-                <td className="px-6 py-3 text-heading">{m.labelPlural}</td>
-                <td className="px-6 py-3">{m.slug}</td>
-                <td className="px-6 py-3">{m._count.fields}</td>
-                <td className="px-6 py-3">{m._count.statuses}</td>
-                <td className="px-6 py-3">
+              <tr key={m.slug} className="h-12 border-b border-border last:border-0">
+                <td className="px-6 text-heading">{m.labelPlural}</td>
+                <td className="px-6 text-body">{m.slug}</td>
+                <td className="px-6 text-body">{m._count.fields}</td>
+                <td className="px-6 text-body">{m._count.statuses}</td>
+                <td className="px-6">
                   <span className="flex gap-4">
                     {/* One name per builder: a shared name would make the
                         interaction log unable to say which one was opened. */}
@@ -92,7 +105,7 @@ export default async function ModulesSettingsPage() {
             ))}
           </tbody>
         </table>
-      </section>
+      </Panel>
     </div>
   );
 }

@@ -32,18 +32,22 @@ export default async function FieldBuilderPage({
   if (!module) notFound();
 
   return (
-    <div className="mx-auto max-w-[1440px] px-8 py-10">
-      <Link
-        href="/settings/modules"
-        data-track={`${module.slug}.fields.back.open`}
-        className="text-sm text-primary hover:underline"
-      >
-        ← Module settings
-      </Link>
-      <h1 className="mt-2 text-xl font-semibold text-heading">{module.labelPlural} — fields</h1>
-      <p className="mt-1 text-sm text-body">
-        Add fields from the palette, drag rows to reorder, click a row to edit.
-      </p>
+    // The shell's <main> owns the canvas gutter; a second page-level one put
+    // every settings screen on a different grid from the module list.
+    <div className="flex flex-col gap-6">
+      <div>
+        <Link
+          href="/settings/modules"
+          data-track={`${module.slug}.fields.back.open`}
+          className="text-sm text-primary hover:underline"
+        >
+          ← Module settings
+        </Link>
+        <h1 className="mt-2 text-title font-medium text-heading">{module.labelPlural} — fields</h1>
+        <p className="mt-1 text-sm text-body">
+          Add fields from the palette, drag rows to reorder, click a row to edit.
+        </p>
+      </div>
 
       <FieldBuilder slug={module.slug} label={module.labelPlural} />
     </div>
