@@ -39,6 +39,18 @@ export const LANGUAGES = [
   'English', 'Hindi', 'Tamil', 'Telugu', 'Urdu', 'Malayalam', 'Gujarati',
 ] as const;
 
+/**
+ * The `Lead.source` column is the `LeadSource` ENUM, not free text, so these
+ * two values are the only ones the database can store — a third option would
+ * be written straight into a Prisma enum violation. They are seeded as
+ * FieldOption rows anyway so the generic form reads them like any other
+ * dropdown; they must stay in step with `enum LeadSource` in schema.prisma.
+ */
+export const LEAD_SOURCES = [
+  { value: 'CAMPAIGN', label: 'Campaign' },
+  { value: 'ARK_TERMINAL', label: 'ARK Terminal' },
+] as const;
+
 export const PICKLISTS = {
   leadCategory:    ['Hot', 'Warm', 'Cold', 'Junk', 'Engaged Leads', 'High Potential'],
   leadSourceName:  ['A-One', 'ACC TBM', 'Account', 'Account Center', 'Account Join TB', 'Account Prime'],
@@ -58,7 +70,10 @@ export const DEPARTMENTS = ['Sales', 'Back Office', 'Compliance'] as const;
 type Field = {
   key: string; label: string; type: string;
   systemColumn?: string; isSystem?: boolean; isRequired?: boolean;
-  isUnique?: boolean; isIndexed?: boolean; section: string; options?: readonly string[];
+  isUnique?: boolean; isIndexed?: boolean; section: string;
+  /** A bare string is a value that reads well as its own label; the pair form is
+   *  for options whose stored value is a machine token (an enum member). */
+  options?: readonly (string | { value: string; label: string })[];
 };
 
 export const LEAD_SECTIONS = ['Lead Information', 'Personal Information', 'ARK Information'] as const;
@@ -75,7 +90,7 @@ export const LEAD_FIELDS: Field[] = [
   { key: 'whatsapp',     label: 'WhatsApp No.',   type: 'PHONE',           systemColumn: 'whatsapp',     section: 'Lead Information' },
   { key: 'email',        label: 'Email',          type: 'EMAIL',           systemColumn: 'email',        section: 'Lead Information' },
   { key: 'language',     label: 'Language',       type: 'DROPDOWN',        systemColumn: 'language',     isSystem: true, isRequired: true, section: 'Lead Information', options: LANGUAGES },
-  { key: 'source',       label: 'Source',         type: 'DROPDOWN',        systemColumn: 'source',       isSystem: true, isRequired: true, section: 'Lead Information' },
+  { key: 'source',       label: 'Source',         type: 'DROPDOWN',        systemColumn: 'source',       isSystem: true, isRequired: true, section: 'Lead Information', options: LEAD_SOURCES },
   { key: 'statusId',     label: 'Lead Status',    type: 'DROPDOWN',        systemColumn: 'statusId',     isSystem: true, isRequired: true, section: 'Lead Information' },
   { key: 'ownerId',      label: 'Lead Owner',     type: 'USER_LOOKUP',     systemColumn: 'ownerId',      isSystem: true, isRequired: true, section: 'Lead Information' },
   { key: 'groupId',      label: 'Group',          type: 'RECORD_LINK',     systemColumn: 'groupId',      section: 'Lead Information' },

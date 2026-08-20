@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui';
 import { PendingOverlay } from './pending-overlay';
+import { RecordFormOverlay } from './record-form-overlay';
 import { ExportIcon, ImportIcon, PlusIcon } from './icons';
 
 /**
@@ -10,29 +11,38 @@ import { ExportIcon, ImportIcon, PlusIcon } from './icons';
  * "Create Lead" is what `label` happens to hold today, and the same component
  * says "Create Invoice" the day an Admin adds that module without a deploy.
  *
- * The actions open a full-screen stub rather than doing nothing, so the shape
- * of the interaction (and its `data-track` name) is already the real one.
+ * Create opens the generated record form; export and import open a full-screen
+ * stub rather than doing nothing, so the shape of the interaction (and its
+ * `data-track` name) is already the real one.
  */
 export interface ListActionsProps {
   slug: string;
   /** module.label — SINGULAR, the thing one of these records is. */
   label: string;
+  /**
+   * Field key → `FieldDefinition.systemColumn`, for the record form. It has to
+   * come from the server: the fields API does not serialise the column, and
+   * the form needs it to know which field IS the status and which IS the owner
+   * without naming either — see `RecordFormOverlay`.
+   */
+  systemColumns: Record<string, string | null>;
   canCreate: boolean;
   canImportExport: boolean;
 }
 
-type PendingAction = 'create' | 'export' | 'import';
+type PendingAction = 'export' | 'import';
 
-export function ListActions({ slug, label, canCreate, canImportExport }: ListActionsProps) {
+export function ListActions({
+  slug,
+  label,
+  systemColumns,
+  canCreate,
+  canImportExport,
+}: ListActionsProps) {
+  const [creating, setCreating] = useState(false);
   const [pending, setPending] = useState<PendingAction | null>(null);
 
   const COPY: Record<PendingAction, { title: string; message: string }> = {
-    create: {
-      title: `Create ${label}`,
-      message:
-        `The ${label} form is generated from this module's fields, sections and layout, ` +
-        'and arrives with the record engine slice. It will open right here, full screen.',
-    },
     export: {
       title: `Export ${label} records`,
       message:
@@ -58,7 +68,7 @@ export function ListActions({ slug, label, canCreate, canImportExport }: ListAct
           disabled={!canCreate}
           // A disabled control with no explanation reads as a broken one.
           title={canCreate ? undefined : `Your role cannot create ${label} records.`}
-          onClick={() => setPending('create')}
+          onClick={() => setCreating(true)}
           data-track={`${slug}.list.create.open`}
         >
           Create {label}
@@ -86,6 +96,15 @@ export function ListActions({ slug, label, canCreate, canImportExport }: ListAct
           Import
         </Button>
       </div>
+
+      {creating ? (
+        <RecordFormOverlay
+          slug={slug}
+          label={label}
+          systemColumns={systemColumns}
+          onClose={() => setCreating(false)}
+        />
+      ) : null}
 
       {copy ? (
         <PendingOverlay

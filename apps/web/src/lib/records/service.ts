@@ -187,15 +187,49 @@ function writableFields(ctx: ModuleContext, moduleSlug: string): FieldRow[] {
   );
 }
 
-function toFieldDef(f: FieldRow): FieldDef {
+/**
+ * A field's shape for validation.
+ *
+ * `referenceOptions` covers the picklists whose values do NOT live in
+ * `PicklistOption`: the status column reads the `Status` table, and lookups
+ * point at other rows entirely. Handing those values in keeps validation
+ * strict — a picklist with no options at all rejects everything, which is the
+ * only honest answer for a control with nothing selectable, but it would be
+ * the wrong answer here.
+ */
+function toFieldDef(f: FieldRow, referenceOptions?: Map<string, { value: string }[]>): FieldDef {
+  const supplied = referenceOptions?.get(f.key);
   return {
     key: f.key,
     label: f.label,
     type: f.type,
     isRequired: f.isRequired,
     validation: (f.validation ?? null) as FieldValidation | null,
-    options: f.options,
+    options: supplied ?? f.options,
   };
+}
+
+/**
+ * Values for the reference-backed picklists on this module. Keyed by field
+ * key, resolved from the tables that actually own them.
+ */
+async function referenceOptionsFor(
+  ctx: ModuleContext,
+  writable: FieldRow[],
+): Promise<Map<string, { value: string }[]>> {
+  const out = new Map<string, { value: string }[]>();
+  const statusColumn = ctx.storage.shape.statusColumn;
+  if (!statusColumn) return out;
+
+  const statusField = writable.find((f) => f.systemColumn === statusColumn);
+  if (!statusField) return out;
+
+  const statuses = await prisma.status.findMany({
+    where: { moduleId: ctx.module.id, isDeleted: false },
+    select: { id: true },
+  });
+  out.set(statusField.key, statuses.map((s) => ({ value: s.id })));
+  return out;
 }
 
 /**
@@ -469,7 +503,10 @@ export async function createRecord(
   values = normalisePhones(writable, values);
 
   // The ONE validation path. Everything above only decided what to hand it.
-  const parsed = buildRecordSchema(writable.map(toFieldDef)).parse(values) as Row;
+  const refOptions = await referenceOptionsFor(ctx, writable);
+  const parsed = buildRecordSchema(
+    writable.map((f) => toFieldDef(f, refOptions)),
+  ).parse(values) as Row;
 
   const { columns, json } = storage.resolver.partition(parsed);
   if (!storage.shape.hasJsonContainer && Object.keys(json).length > 0) {
@@ -696,7 +733,10 @@ export async function updateRecord(
   // `.partial()` on the generated schema: a PATCH says what changed, so a
   // required field that is simply absent is not a validation failure — but a
   // field that IS present still faces the same rules as on create.
-  const parsed = buildRecordSchema(writable.map(toFieldDef)).partial().parse(submitted) as Row;
+  const refOptions = await referenceOptionsFor(ctx, writable);
+  const parsed = buildRecordSchema(writable.map((f) => toFieldDef(f, refOptions)))
+    .partial()
+    .parse(submitted) as Row;
 
   // Only the keys the payload actually carried. Zod's `.partial()` leaves
   // absent keys undefined, and treating those as "set to null" would wipe

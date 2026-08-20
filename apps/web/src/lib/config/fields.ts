@@ -17,6 +17,8 @@
 import 'server-only';
 import { prisma, Prisma } from '@crm/db';
 import { PermissionEngine } from '@crm/core';
+import { enumValuesFor } from './enum-columns';
+import { storageFor } from '@/lib/records/list';
 import {
   collectFieldKeys,
   uniqueFieldKey,
@@ -311,7 +313,14 @@ export async function updateField(
     before: (tx) =>
       tx.fieldDefinition.findUnique({ where: { id: fieldId }, include: WITH_OPTIONS }),
     mutate: async (tx) => {
-      if (input.options) await diffOptions(tx, fieldId, input.options);
+      if (input.options) {
+        await diffOptions(
+          tx,
+          fieldId,
+          input.options,
+          allowedEnumValues(module, field.systemColumn),
+        );
+      }
 
       const updated = await tx.fieldDefinition.update({
         where: { id: fieldId },
@@ -342,10 +351,40 @@ export async function updateField(
  * rows soft-delete, id-less entries create. Array position becomes
  * displayOrder, so reordering options is the same PATCH as renaming one.
  */
+/**
+ * Values an enum-backed column will accept, or null when it is free text.
+ * Resolved through StorageResolver, so this never looks at a module slug.
+ */
+function allowedEnumValues(
+  module: { slug: string; isCore: boolean; id?: string },
+  systemColumn: string | null,
+): string[] | null {
+  const storage = storageFor({ slug: module.slug, isCore: module.isCore, id: module.id }, []);
+  return enumValuesFor(storage.delegateName, systemColumn);
+}
+
+/**
+ * Refuse an option the database cannot store. Without this the option saves
+ * happily and every record using it fails at INSERT — the Admin finds out on a
+ * lead they cannot save, with nothing pointing back at the field they edited
+ * days earlier.
+ */
+function assertOptionValueStorable(allowed: string[] | null, value: string, label: string): void {
+  if (!allowed || allowed.includes(value)) return;
+  throw new ConfigError(
+    `"${label}" cannot be added: this field is backed by a fixed database type that ` +
+      `accepts only ${allowed.join(', ')}. Adding a value needs a schema change — the ` +
+      `option would save here and then fail on every record that used it.`,
+    422,
+    'GUARDRAIL',
+  );
+}
+
 async function diffOptions(
   tx: Tx,
   fieldId: string,
   options: NonNullable<FieldUpdateInput['options']>,
+  allowedEnum: string[] | null = null,
 ): Promise<void> {
   const existing = await tx.picklistOption.findMany({ where: { fieldDefinitionId: fieldId } });
   const byId = new Map(existing.map((o) => [o.id, o]));
@@ -376,6 +415,7 @@ async function diffOptions(
       });
     } else {
       const value = opt.value ?? opt.label;
+      assertOptionValueStorable(allowedEnum, value, opt.label);
       if (usedValues.has(value)) {
         throw new ConfigError(
           `Option value "${value}" already exists on this field (retired options keep their value)`,

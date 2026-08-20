@@ -1,9 +1,9 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import { DataTable, type DataTableColumn } from '@/components/ui';
 import { renderFieldCell, type CellField, type StatusOption } from './cell';
-import { PendingOverlay } from './pending-overlay';
 
 /**
  * The list table. It is handed columns, fields, statuses and rows and has no
@@ -25,8 +25,6 @@ export interface TableRow extends Record<string, unknown> {
 
 export interface RecordTableProps {
   slug: string;
-  /** module.label — SINGULAR, used in the record overlay's title. */
-  label: string;
   columns: DataTableColumn[];
   fields: CellField[];
   statuses: StatusOption[];
@@ -36,14 +34,13 @@ export interface RecordTableProps {
 
 export function RecordTable({
   slug,
-  label,
   columns,
   fields,
   statuses,
   rows,
   emptyMessage,
 }: RecordTableProps) {
-  const [openRow, setOpenRow] = useState<TableRow | null>(null);
+  const router = useRouter();
 
   // Maps, not `.find()` per cell: a 100-row page across 12 columns is 1,200
   // lookups, and both of these are keyed on ids that never repeat.
@@ -51,37 +48,27 @@ export function RecordTable({
   const statusById = useMemo(() => new Map(statuses.map((s) => [s.id, s])), [statuses]);
 
   return (
-    <>
-      <DataTable<TableRow>
-        columns={columns}
-        rows={rows}
-        rowKey={(row) => row.id}
-        renderCell={(column, row) =>
-          renderFieldCell({
-            field: fieldByKey.get(column.key),
-            value: row[column.key],
-            statusById,
-          })
-        }
-        onRowClick={setOpenRow}
-        // The table emits `${trackPrefix}.row.open` from this prefix — the
-        // interaction logger is one delegated listener, so the name has to be
-        // right here rather than on each row.
-        trackPrefix={`${slug}.list`}
-        emptyMessage={emptyMessage}
-      />
-
-      {openRow ? (
-        <PendingOverlay
-          title={`${label} details`}
-          message={
-            'The record view — timeline, related lists and the layout an Admin arranged — arrives ' +
-            'with the record engine slice. It opens full screen, exactly here.'
-          }
-          trackPrefix={`${slug}.list`}
-          onClose={() => setOpenRow(null)}
-        />
-      ) : null}
-    </>
+    <DataTable<TableRow>
+      columns={columns}
+      rows={rows}
+      rowKey={(row) => row.id}
+      renderCell={(column, row) =>
+        renderFieldCell({
+          field: fieldByKey.get(column.key),
+          value: row[column.key],
+          statusById,
+        })
+      }
+      // A real navigation, not an overlay: the record has a URL, so it can be
+      // linked, opened in a new tab and returned to with the Back button. The
+      // route is built from the slug, which is the only thing this component
+      // knows about the module.
+      onRowClick={(row) => router.push(`/${slug}/${row.id}`)}
+      // The table emits `${trackPrefix}.row.open` from this prefix — the
+      // interaction logger is one delegated listener, so the name has to be
+      // right here rather than on each row.
+      trackPrefix={`${slug}.list`}
+      emptyMessage={emptyMessage}
+    />
   );
 }

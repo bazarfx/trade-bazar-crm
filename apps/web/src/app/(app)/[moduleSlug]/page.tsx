@@ -120,7 +120,13 @@ export default async function ModulePage({
     prisma.fieldDefinition.findMany({
       where: { moduleId: mod.id, isDeleted: false },
       orderBy: { displayOrder: 'asc' },
-      select: { key: true, label: true, type: true, systemColumn: true },
+      select: {
+        key: true, label: true, type: true, systemColumn: true,
+        // Options come along so a picklist cell can show its LABEL rather
+        // than the value it stores. Retired options are included: an older
+        // record still points at one and would otherwise lose its label.
+        options: { select: { value: true, label: true }, orderBy: { displayOrder: 'asc' } },
+      },
     }),
     prisma.status.findMany({
       where: { moduleId: mod.id, isDeleted: false },
@@ -191,6 +197,12 @@ export default async function ModulePage({
         <ListActions
           slug={mod.slug}
           label={mod.label}
+          // The record form has to know which field IS the status and which IS
+          // the owner — the status picker is fed from the `Status` table and
+          // both are filled server-side on create — and `FieldDto` does not
+          // serialise the column, so it travels from here. Keyed by field key,
+          // never by label: both sides read the physical column.
+          systemColumns={Object.fromEntries(fields.map((f) => [f.key, f.systemColumn]))}
           canCreate={engine.can('create', mod.slug)}
           canImportExport={engine.hasSpecial('IMPORT_EXPORT')}
         />
@@ -246,7 +258,6 @@ export default async function ModulePage({
           ) : (
             <RecordTable
               slug={mod.slug}
-              label={mod.label}
               columns={columns}
               // Only the columns' own fields cross to the client: the other 20
               // a module may have would be payload nothing on screen reads.
@@ -254,6 +265,9 @@ export default async function ModulePage({
                 key: f.key,
                 type: f.type,
                 systemColumn: f.systemColumn,
+                // A picklist cell shows its option LABEL, not the value stored
+                // underneath it.
+                options: f.options,
               }))}
               statuses={statusRows}
               rows={rows}

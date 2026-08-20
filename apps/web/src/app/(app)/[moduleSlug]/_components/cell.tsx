@@ -1,7 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import type { FieldType, StatusTagValue } from '@crm/shared';
+import { FIELD_TYPE_SPECS, type FieldType, type StatusTagValue } from '@crm/shared';
 import { StatusChip } from '@/components/ui';
 import { CheckIcon } from './icons';
 
@@ -15,6 +15,17 @@ export interface CellField {
   key: string;
   type: FieldType;
   systemColumn: string | null;
+  /**
+   * The field's picklist options, when it has any.
+   *
+   * A picklist STORES a value and DISPLAYS a label, and the two are not the
+   * same string — `source` stores the `LeadSource` enum member `ARK_TERMINAL`
+   * and reads "ARK Terminal". Most seeded options happen to use one string for
+   * both, which hides the difference until an Admin renames an option: the
+   * stored value never changes, so a renderer echoing the raw value would keep
+   * showing the OLD label forever, here and in every timeline diff.
+   */
+  options?: readonly { value: string; label: string }[];
 }
 
 export interface StatusOption {
@@ -75,6 +86,30 @@ function BooleanCell({ value }: { value: boolean }) {
   );
 }
 
+/**
+ * A picklist value (or array of them) as the labels it names.
+ *
+ * A value with no matching option is one whose option the Admin retired —
+ * invariant 4 keeps the record's data readable, so the raw value is shown
+ * rather than a gap. Returns null when there is nothing to resolve, so the
+ * caller falls through to the plain renderers.
+ */
+export function optionLabel(field: CellField | undefined, value: unknown): string | null {
+  const options = field?.options;
+  if (!options || options.length === 0) return null;
+
+  const labelFor = (v: unknown): string | null => {
+    if (typeof v !== 'string') return null;
+    return options.find((o) => o.value === v)?.label ?? v;
+  };
+
+  if (Array.isArray(value)) {
+    const parts = value.map(labelFor).filter((v): v is string => v !== null);
+    return parts.length > 0 ? parts.join(', ') : null;
+  }
+  return labelFor(value);
+}
+
 /** `{ attachmentId, name, size, contentType }` — files store an id, never a URL. */
 function attachmentName(value: Record<string, unknown>): string | null {
   const name = value['name'];
@@ -104,6 +139,14 @@ export function renderFieldCell({ field, value, statusById }: RenderCellArgs): R
   if (value === null || value === undefined || value === '') return EMPTY;
 
   const type = field?.type;
+
+  // A picklist value is a KEY into the field's options — resolve it to the
+  // label the Admin last typed. `hasOptions` is asked of the type registry so
+  // this covers every picklist type there is and no type that is not one.
+  if (type !== undefined && FIELD_TYPE_SPECS[type].hasOptions) {
+    const label = optionLabel(field, value);
+    if (label !== null) return label;
+  }
 
   if (type === 'DATE' || type === 'DATE_TIME') {
     if (typeof value !== 'string') return EMPTY;

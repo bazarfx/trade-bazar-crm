@@ -87,13 +87,26 @@ function baseSchema(f: FieldDef): z.ZodTypeAny {
 
     case 'DROPDOWN': {
       const vals = (f.options ?? []).map((o) => o.value);
-      return vals.length ? z.enum(vals as [string, ...string[]]) : z.string();
+      // A picklist with no options accepts NOTHING. Falling back to a free
+      // string is how an unconstrained value reaches the database: on a column
+      // backed by a Postgres enum that surfaces as a raw driver error — a 500
+      // on save, pointing at nothing the Admin can act on. Refusing here names
+      // the real problem instead: the field has no options configured.
+      if (vals.length === 0) {
+        return z.never({ message: `${f.label} has no options configured` });
+      }
+      return z.enum(vals as [string, ...string[]]);
     }
 
     case 'MULTI_SELECT':
     case 'LANGUAGE_PICKER': {
       const vals = (f.options ?? []).map((o) => o.value);
-      const item = vals.length ? z.enum(vals as [string, ...string[]]) : z.string();
+      // Same reasoning as DROPDOWN — but an EMPTY selection stays valid, so
+      // this only forbids picking a value that does not exist.
+      const item =
+        vals.length > 0
+          ? z.enum(vals as [string, ...string[]])
+          : z.never({ message: `${f.label} has no options configured` });
       return z.array(item);
     }
 

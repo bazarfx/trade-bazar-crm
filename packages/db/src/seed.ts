@@ -163,11 +163,15 @@ async function main() {
       });
 
       if (f.options) {
-        for (const [j, label] of f.options.entries()) {
+        for (const [j, option] of f.options.entries()) {
+          // A bare string is its own label; the pair form keeps the stored
+          // value a machine token while the picker shows something readable.
+          const value = typeof option === 'string' ? option : option.value;
+          const label = typeof option === 'string' ? option : option.label;
           await prisma.picklistOption.upsert({
-            where: { fieldDefinitionId_value: { fieldDefinitionId: field.id, value: label } },
+            where: { fieldDefinitionId_value: { fieldDefinitionId: field.id, value } },
             update: {},
-            create: { fieldDefinitionId: field.id, label, value: label, displayOrder: j },
+            create: { fieldDefinitionId: field.id, label, value, displayOrder: j },
           });
         }
       }
