@@ -79,6 +79,10 @@ export interface RecordDelegate {
   count(args: { where: Row }): Promise<number>;
   create(args: { data: Row; select: Row }): Promise<Row>;
   update(args: { where: { id: string }; data: Row; select: Row }): Promise<Row>;
+  /** One statement for a whole page of ids — what a bulk reassignment moves
+   *  with. Never a `where` a caller built by hand: the ids come from a read
+   *  that already went through `scopedWhere`. */
+  updateMany(args: { where: Row; data: Row }): Promise<{ count: number }>;
 }
 
 /**
@@ -127,10 +131,27 @@ interface DelegateShape {
   hasJsonContainer: boolean;
   /** column carrying the record's owner; null = rows here are not owned */
   ownerColumn: string | null;
+  /**
+   * Column carrying the TEAM a record belongs to; null = this table has no
+   * group. Written by the assignment engine beside the owner: round-robin
+   * picks a person out of a language group, and the group is what a floor
+   * manager filters and reports on afterwards. Also what GROUP view scope
+   * reads, which is why the two ✗ GROUP rows below are the same tables that
+   * carry null here.
+   */
+  groupColumn: string | null;
   /** column carrying the Status foreign key; null = this table has no status */
   statusColumn: string | null;
   /** column carrying the record's language — half of the dedupe match key */
   languageColumn: string | null;
+  /**
+   * Column carrying WHERE a record came from — the permanent Source stamp
+   * (spec §6.1). Null = this table has no source, and everything in it is
+   * campaign-shaped as far as routing is concerned. Read by the assignment
+   * engine, which routes an ARK-stamped record to the senior pool and
+   * everything else to the language group.
+   */
+  sourceColumn: string | null;
   /** column stamping who created the row; null = this table does not record it */
   createdByColumn: string | null;
   /**
@@ -235,8 +256,14 @@ const GENERIC_SHAPE: DelegateShape = {
   softDeleteColumn: 'isDeleted',
   hasJsonContainer: true,
   ownerColumn: 'ownerId',
+  // The generic table has no groupId and no source: its promoted slots are
+  // name/email/phone/language/owner/status/amount. An Admin-created module
+  // therefore assigns by language group and pool without recording the group
+  // on the row, and routes as CAMPAIGN.
+  groupColumn: null,
   statusColumn: 'statusId',
   languageColumn: 'language',
+  sourceColumn: null,
   createdByColumn: 'createdById',
   canFlagDuplicates: false,
   canInsertRows: true,
@@ -250,8 +277,10 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
     softDeleteColumn: 'isDeleted',
     hasJsonContainer: true,
     ownerColumn: 'ownerId',
+    groupColumn: 'groupId',
     statusColumn: 'statusId',
     languageColumn: 'language',
+    sourceColumn: 'source',
     createdByColumn: 'createdById',
     // The only table `DuplicateFlag` can reference — see the field comment.
     canFlagDuplicates: true,
@@ -271,8 +300,12 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
     softDeleteColumn: 'isDeleted',
     hasJsonContainer: true,
     ownerColumn: 'ownerId',
+    // No groupId column — see the GROUP scope table above — and no source: a
+    // deal's origin is its linked lead, one hop away.
+    groupColumn: null,
     statusColumn: 'statusId',
     languageColumn: 'language',
+    sourceColumn: null,
     // Deal has no createdById: a deal is created BY the conversion pipeline,
     // and `closedById` is the durable credit for it (spec §7.1).
     createdByColumn: null,
@@ -286,8 +319,10 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
     softDeleteColumn: 'isDeleted',
     hasJsonContainer: true,
     ownerColumn: null,
+    groupColumn: null,
     statusColumn: null,
     languageColumn: null,
+    sourceColumn: null,
     createdByColumn: null,
     canFlagDuplicates: false,
     canInsertRows: true,
@@ -305,10 +340,14 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
     // A user is not owned by anyone — its identity IS its ownership, which the
     // ownership read expresses and the write path must not try to stamp.
     ownerColumn: null,
+    // A user's groups are the GroupMember join table, not a column, and a user
+    // is never round-robined to a team.
+    groupColumn: null,
     statusColumn: null,
     // `languages` is a multi-select of what a user SPEAKS, not the record's own
     // language, and a user is never dedupe-matched on it.
     languageColumn: null,
+    sourceColumn: null,
     createdByColumn: null,
     canFlagDuplicates: false,
     // An account, not a record — see `canInsertRows`.
@@ -348,8 +387,10 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
     softDeleteColumn: null,
     hasJsonContainer: false,
     ownerColumn: null,
+    groupColumn: null,
     statusColumn: null,
     languageColumn: null,
+    sourceColumn: null,
     createdByColumn: null,
     canFlagDuplicates: false,
     // A ledger row the webhook writes, with its source event — see above.

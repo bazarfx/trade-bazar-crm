@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { DataTable, type DataTableColumn } from '@/components/ui';
+import { DataTable, type DataTableColumn, type DataTableSelection } from '@/components/ui';
 import { renderFieldCell, type CellField, type StatusOption } from './cell';
 
 /**
@@ -35,6 +35,10 @@ export interface RecordTableProps {
   sort?: { key: string; direction: 'asc' | 'desc' };
   /** a header was activated — the screen decides what sorting by it means */
   onSortColumn?: (key: string) => void;
+  /** id → name for the user columns; absent, those cells show the stored id */
+  userNames?: ReadonlyMap<string, string>;
+  /** present ⇒ the table draws its selection column. See DataTableSelection. */
+  selection?: DataTableSelection;
 }
 
 export function RecordTable({
@@ -47,6 +51,8 @@ export function RecordTable({
   loading = false,
   sort,
   onSortColumn,
+  userNames,
+  selection,
 }: RecordTableProps) {
   const router = useRouter();
 
@@ -65,6 +71,7 @@ export function RecordTable({
           field: fieldByKey.get(column.key),
           value: row[column.key],
           statusById,
+          ...(userNames ? { userNames } : {}),
         })
       }
       // A real navigation, not an overlay: the record has a URL, so it can be
@@ -80,6 +87,7 @@ export function RecordTable({
       loading={loading}
       {...(sort ? { sort } : {})}
       {...(onSortColumn ? { onSortColumn } : {})}
+      {...(selection ? { selection } : {})}
     />
   );
 }

@@ -17,9 +17,13 @@
  *    append-only AuditLog in the same transaction as the mutation.
  *
  * Users are business data, not configuration: they belong in AuditLog (layer
- * A), never ConfigChangeLog. Reassignment of a deactivated user's records is
- * deliberately NOT here — this service reports the count and the assignment
- * slice owns the move.
+ * A), never ConfigChangeLog.
+ *
+ * Deactivation carries a fourth duty, added with the assignment engine: it
+ * HANDS OVER the user's open records in the same transaction that switches
+ * them off, and refuses with a 409 when it has nowhere to put them. Nothing is
+ * ever unassigned (invariant 1), and nothing is ever left owned by somebody
+ * who can no longer log in.
  */
 import 'server-only';
 import { prisma, Prisma } from '@crm/db';
@@ -30,6 +34,7 @@ import {
   type UserUpdateInput,
 } from '@crm/shared';
 import type { Principal } from '@/lib/auth/actor';
+import { ASSIGNMENT_REASON_KEY, type AssignmentReason } from '@/lib/assignment';
 import { audit } from '@/lib/audit';
 import { hashPassword } from '@/lib/auth/passwords';
 import { revokeAllSessions } from '@/lib/auth/session';
@@ -51,6 +56,15 @@ const USERS_MODULE_SLUG = 'users';
  * Admin-editable and the timeline must stay readable after a rename.
  */
 const USER_ENTITY_TYPE = 'User';
+
+/**
+ * The reason a handover stamps on every record it moves.
+ *
+ * Typed against the assignment engine's vocabulary so the timeline speaks ONE
+ * language about why a record changed hands, whoever moved it — the round
+ * robin, a floor manager, or this.
+ */
+const HANDOVER_REASON: AssignmentReason = 'deactivation_handover';
 
 /** Ceiling on one page of users. A hand-edited `?take=100000` is a full scan. */
 export const USERS_PAGE_MAX = 200;
@@ -79,10 +93,19 @@ export interface UserListResult {
   total: number;
 }
 
-/** Deactivation answers with the reassignment prompt's number (spec §5.5). */
+/**
+ * Deactivation answers with what it moved (spec §5.5).
+ *
+ * `ownedOpenRecords` is what is LEFT, which after a successful deactivation is
+ * always zero — the call cannot succeed while the user still owns open work.
+ * The number behind the reassignment PROMPT travels on the 409 instead, which
+ * is the only moment a caller can act on it.
+ */
 export interface SetUserActiveResult {
   user: UserListItem;
   ownedOpenRecords: number;
+  /** how many records the handover moved to the chosen user */
+  reassigned: number;
 }
 
 /**
@@ -501,6 +524,23 @@ export async function updateUser(
         await assertAnotherAdminRemains(tx, userId);
       }
 
+      // Deactivating here carries the third consequence too: nothing may be
+      // left owned by a deactivated user (spec §5.5, invariant 1). A field
+      // edit is not a handover — it has nowhere to name a target — so this
+      // path refuses and sends the caller to the operation that can move the
+      // work, rather than quietly stranding it.
+      if (deactivating) {
+        const ownedOpenRecords = await countOwnedOpenRecords(tx, userId);
+        if (ownedOpenRecords > 0) {
+          throw new ConfigError(
+            `This user still owns ${ownedOpenRecords} open record(s); deactivate them from the account controls and choose who takes them over`,
+            409,
+            'CONFLICT',
+            { ownedOpenRecords },
+          );
+        }
+      }
+
       const user = await tx.user.update({
         where: { id: userId },
         data: {
@@ -546,17 +586,24 @@ export async function updateUser(
 }
 
 /**
- * Activate or deactivate an account.
+ * Activate or deactivate an account, and hand over what the user was working.
  *
  * Its own operation because deactivation is not a field edit: it trips the
- * last-admin guardrail, it kills every live session, and it owes the caller
- * the number of records left behind so the UI can prompt for a reassignment
- * target (spec §5.5). The reassignment itself belongs to the assignment slice.
+ * last-admin guardrail, it kills every live session, and it MOVES WORK. Spec
+ * §5.5 has the system prompting for a reassignment target; the prompt is the
+ * 409 this raises when the user still owns open records and no target was
+ * given, and `reassignToUserId` is the answer coming back.
+ *
+ * The handover and the deactivation are one transaction, in that order. There
+ * is no ordering in which an inactive user owns live work, and no partial
+ * outcome where some of it moved: nothing is ever unassigned (invariant 1),
+ * and nothing is ever owned by somebody who cannot log in.
  */
 export async function setUserActive(
   principal: Principal,
   userId: string,
   isActive: boolean,
+  reassignToUserId?: string | null,
 ): Promise<SetUserActiveResult> {
   assertManageUsers(principal);
 
@@ -570,22 +617,58 @@ export async function setUserActive(
   });
   if (!existing) throw new ConfigError('Unknown user', 404, 'NOT_FOUND');
 
-  const updated = await prisma.$transaction(async (tx) => {
-    if (!isActive && existing.role.isLocked) await assertAnotherAdminRemains(tx, userId);
-
-    const user = await tx.user.update({
-      where: { id: userId },
-      data: { isActive },
-      select: USER_SELECT,
+  // An activation has nothing to hand over, so a target sent with one is
+  // ignored rather than acted on — moving records is not what was asked for.
+  const handoverTo = isActive ? null : (reassignToUserId ?? null);
+  if (handoverTo !== null) {
+    // Proved before the transaction opens: the caller's mistake costs one
+    // query, not a rolled-back handover.
+    if (handoverTo === userId) {
+      throw new ConfigError(
+        'Choose somebody other than the user being deactivated',
+        422,
+        'VALIDATION',
+        { fields: { reassignToUserId: ['Choose a different user'] } },
+      );
+    }
+    const target = await prisma.user.findFirst({
+      where: { id: handoverTo, isActive: true },
+      select: { id: true },
     });
-
-    if (existing.isActive !== isActive) {
-      await writeAudit(tx, principal, userId, 'RECORD_UPDATED', {
-        isActive: { from: existing.isActive, to: isActive },
+    if (!target) {
+      throw new ConfigError('The chosen user is not active', 422, 'VALIDATION', {
+        fields: { reassignToUserId: ['The chosen user is not active'] },
       });
     }
-    return user;
-  });
+  }
+
+  const { user: updated, reassigned } = await prisma.$transaction(
+    async (tx) => {
+      if (!isActive && existing.role.isLocked) await assertAnotherAdminRemains(tx, userId);
+
+      // BEFORE the flip, in the same transaction. Refuses with a 409 when
+      // there is work to move and nowhere to move it.
+      const moved = isActive ? 0 : await handOverOpenRecords(tx, principal, userId, handoverTo);
+
+      const user = await tx.user.update({
+        where: { id: userId },
+        data: { isActive },
+        select: USER_SELECT,
+      });
+
+      if (existing.isActive !== isActive) {
+        await writeAudit(tx, principal, userId, 'RECORD_UPDATED', {
+          isActive: { from: existing.isActive, to: isActive },
+        });
+      }
+      return { user, reassigned: moved };
+    },
+    // Only the handover needs a larger budget: at the design target a floor
+    // rep can own thousands of open leads, and Prisma's 5s default is sized
+    // for a single-row write. A deactivation with nothing to move stays on
+    // the defaults.
+    handoverTo === null ? {} : { timeout: 120_000, maxWait: 10_000 },
+  );
 
   // Deactivation must take effect now, not when an access token happens to
   // expire. `loadPrincipal` already refuses an inactive user, so this closes
@@ -594,47 +677,217 @@ export async function setUserActive(
 
   return {
     user: await present(engine, module, fields, updated),
-    // Only meaningful on the way out: an activation has nothing to hand over.
-    ownedOpenRecords: isActive ? 0 : await countOwnedOpenRecords(userId),
+    // Zero by construction on the way out: a deactivation that left anything
+    // behind would have been refused above.
+    ownedOpenRecords: 0,
+    reassigned,
   };
 }
+
+// ── handover (spec §5.5) ──────────────────────────────────────────────────
+
+/**
+ * The statuses that mean "this record needs nobody".
+ *
+ * Read as TAGS, never as names — the Admin renames statuses at will, and a
+ * rename must not change who gets handed over. `Record.statusId` has no
+ * relation in the schema, so the same set also travels as ids for that table.
+ */
+async function closedStatuses(db: Tx): Promise<{
+  tags: (typeof HANDOVER_CLOSED_TAGS)[number][];
+  ids: string[];
+}> {
+  const tags = [...HANDOVER_CLOSED_TAGS];
+  const rows = await db.status.findMany({ where: { tag: { in: tags } }, select: { id: true } });
+  return { tags, ids: rows.map((s) => s.id) };
+}
+
+type ClosedStatuses = Awaited<ReturnType<typeof closedStatuses>>;
+
+/**
+ * Every table that physically carries an `ownerId`, as one uniform list.
+ *
+ * A STORAGE fact from schema.prisma (Lead.ownerId, Deal.ownerId,
+ * Record.ownerId), not a module list: every Admin-created module lands in
+ * `record` and is counted, moved and logged here without this function being
+ * touched. `entityType` is the Prisma MODEL name the timeline reader resolves,
+ * never a module slug — slugs are Admin-editable data.
+ *
+ * Closures per delegate keep each query typed against its own model while the
+ * caller iterates one list. `ids` is paged and `reassign` is id-scoped rather
+ * than `{ ownerId }`-scoped: that pairing is what lets the handover move a
+ * page and write exactly that page's timeline entries, so invariant 2 holds
+ * wherever the loop stops.
+ *
+ * Only OPEN records are in scope. A converted or lost record keeps the owner
+ * who worked it — that is the historical credit performance reports count
+ * (spec §7.1 makes the same choice with `Deal.closedById`), and moving it
+ * would rewrite who closed what.
+ */
+function ownedOpenReferences(db: Tx, userId: string, closed: ClosedStatuses) {
+  return [
+    {
+      entityType: 'Lead',
+      count: () =>
+        db.lead.count({
+          where: { ownerId: userId, isDeleted: false, status: { tag: { notIn: closed.tags } } },
+        }),
+      ids: (take: number) =>
+        db.lead.findMany({
+          where: { ownerId: userId, isDeleted: false, status: { tag: { notIn: closed.tags } } },
+          select: { id: true },
+          take,
+        }),
+      reassign: (to: string, ids: string[]) =>
+        db.lead.updateMany({ where: { id: { in: ids } }, data: { ownerId: to } }),
+    },
+    {
+      entityType: 'Deal',
+      count: () =>
+        db.deal.count({
+          where: { ownerId: userId, isDeleted: false, status: { tag: { notIn: closed.tags } } },
+        }),
+      ids: (take: number) =>
+        db.deal.findMany({
+          where: { ownerId: userId, isDeleted: false, status: { tag: { notIn: closed.tags } } },
+          select: { id: true },
+          take,
+        }),
+      // `Deal.closedById` is deliberately untouched: the deal owner changes,
+      // the permanent credit for the conversion does not (spec §7.1).
+      reassign: (to: string, ids: string[]) =>
+        db.deal.updateMany({ where: { id: { in: ids } }, data: { ownerId: to } }),
+    },
+    {
+      entityType: 'Record',
+      count: () =>
+        db.record.count({
+          where: {
+            ownerId: userId,
+            isDeleted: false,
+            // A record with no status at all is still open.
+            OR: [{ statusId: null }, { statusId: { notIn: closed.ids } }],
+          },
+        }),
+      ids: (take: number) =>
+        db.record.findMany({
+          where: {
+            ownerId: userId,
+            isDeleted: false,
+            OR: [{ statusId: null }, { statusId: { notIn: closed.ids } }],
+          },
+          select: { id: true },
+          take,
+        }),
+      reassign: (to: string, ids: string[]) =>
+        db.record.updateMany({ where: { id: { in: ids } }, data: { ownerId: to } }),
+    },
+  ];
+}
+
+/** Page size of the handover drain loop: ids are read, moved and given their
+ *  timeline entry (invariant 2) one page at a time, so neither the id list nor
+ *  a createMany payload is ever unbounded. */
+const HANDOVER_BATCH = 1000;
+
+/**
+ * Ceiling on how many records one interactive deactivation may move.
+ *
+ * The move must finish inside the transaction that deactivates the user —
+ * a half-moved handover would leave an inactive user owning live work, which
+ * is exactly what invariant 1 forbids — and past this many rows it will not,
+ * on a pooled cross-region connection. Refusing beats rolling back minutes of
+ * work the Admin already believes succeeded.
+ */
+export const HANDOVER_LIMIT = 100_000;
 
 /**
  * How many live records this user still owns — the number behind the
  * reassignment prompt (spec §5.5, §13).
- *
- * The three tables here are the ones that PHYSICALLY carry an `ownerId`
- * (schema.prisma: Lead, Deal, Record). That is a storage fact, not a module
- * list: every Admin-created module lands in `record` and is counted without
- * this function being touched.
- *
- * "Open" reads the status TAG, never the name — a renamed status must not
- * change who gets handed over.
  */
-async function countOwnedOpenRecords(userId: string): Promise<number> {
-  const closedTags = [...HANDOVER_CLOSED_TAGS];
+async function countOwnedOpenRecords(db: Tx, userId: string): Promise<number> {
+  const closed = await closedStatuses(db);
+  const counts = await Promise.all(ownedOpenReferences(db, userId, closed).map((ref) => ref.count()));
+  return counts.reduce((sum, n) => sum + n, 0);
+}
 
-  // `Record.statusId` has no relation in the schema, so its tag filter has to
-  // travel as ids; a record with no status at all is still open.
-  const closedStatusIds = (
-    await prisma.status.findMany({ where: { tag: { in: closedTags } }, select: { id: true } })
-  ).map((s) => s.id);
+/**
+ * Move every open record off a user who is being deactivated.
+ *
+ * Runs INSIDE the deactivation's own transaction, before the `isActive` flip,
+ * so there is no window — not one millisecond, not one failed request — in
+ * which an inactive user owns live work. If no target was given and there is
+ * anything to move, the whole deactivation is refused with a 409 carrying the
+ * count, which is the prompt spec §5.5 describes.
+ *
+ * Every moved record gets its own REASSIGNED entry (invariant 2): a rep
+ * opening a lead tomorrow has to see that it arrived, from whom, and why.
+ */
+async function handOverOpenRecords(
+  tx: Tx,
+  principal: Principal,
+  fromUserId: string,
+  toUserId: string | null,
+): Promise<number> {
+  if (toUserId === null) {
+    const ownedOpenRecords = await countOwnedOpenRecords(tx, fromUserId);
+    // Nothing to hand over: the deactivation proceeds without a target, which
+    // is the common case for an account that never worked a lead.
+    if (ownedOpenRecords === 0) return 0;
+    throw new ConfigError(
+      `This user still owns ${ownedOpenRecords} open record(s); choose who should take them over`,
+      409,
+      'CONFLICT',
+      { ownedOpenRecords },
+    );
+  }
 
-  const [leads, deals, records] = await Promise.all([
-    prisma.lead.count({
-      where: { ownerId: userId, isDeleted: false, status: { tag: { notIn: closedTags } } },
-    }),
-    prisma.deal.count({
-      where: { ownerId: userId, isDeleted: false, status: { tag: { notIn: closedTags } } },
-    }),
-    prisma.record.count({
-      where: {
-        ownerId: userId,
-        isDeleted: false,
-        OR: [{ statusId: null }, { statusId: { notIn: closedStatusIds } }],
-      },
-    }),
-  ]);
+  const closed = await closedStatuses(tx);
+  let moved = 0;
+  for (const ref of ownedOpenReferences(tx, fromUserId, closed)) {
+    // Drain loop: read one page of ids still owned by this user, move exactly
+    // those ids, write exactly their timeline entries, repeat. No cursor is
+    // needed — every pass removes its own rows from the `{ ownerId }`
+    // predicate. Re-read inside the tx rather than reusing a pre-check count,
+    // so a record created underneath the handover moves too.
+    for (;;) {
+      const rows = await ref.ids(HANDOVER_BATCH);
+      if (rows.length === 0) break;
 
-  return leads + deals + records;
+      moved += rows.length;
+      if (moved > HANDOVER_LIMIT) {
+        throw new ConfigError(
+          `This user owns more than ${HANDOVER_LIMIT} open records, more than one request can move; contact support to hand them over in the background`,
+          422,
+          'GUARDRAIL',
+          { limit: HANDOVER_LIMIT },
+        );
+      }
+
+      const ids = rows.map(({ id }) => id);
+      await ref.reassign(toUserId, ids);
+
+      const entries: Prisma.AuditLogCreateManyInput[] = ids.map((id) => ({
+        entityType: ref.entityType,
+        entityId: id,
+        action: 'REASSIGNED',
+        actorType: 'USER',
+        actorId: principal.actor.userId,
+        changes: {
+          // The physical column, not a module's owner FIELD key: one handover
+          // spans every owner-bearing table at once, and resolving three
+          // modules' field configs inside a transaction that may be moving
+          // thousands of rows would cost more than it explains. The seeded
+          // Leads and Deals field is keyed `ownerId` anyway, so the timeline
+          // reads the same either way.
+          ownerId: { from: fromUserId, to: toUserId },
+          // WHY, so the timeline explains a move nobody on the floor asked for.
+          [ASSIGNMENT_REASON_KEY]: { from: null, to: HANDOVER_REASON },
+        } as unknown as Prisma.InputJsonObject,
+      }));
+      await tx.auditLog.createMany({ data: entries });
+    }
+  }
+
+  return moved;
 }

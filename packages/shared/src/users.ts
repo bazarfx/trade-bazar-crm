@@ -46,9 +46,23 @@ export type UserCreateInput = z.infer<typeof userCreateSchema>;
 export const userUpdateSchema = userBaseSchema.partial().strict();
 export type UserUpdateInput = z.infer<typeof userUpdateSchema>;
 
-/** Activate / deactivate. Its own route because deactivation is a guardrail
- *  (last-admin protection) and a session revocation, not a field edit. */
-export const userSetActiveSchema = z.object({ isActive: z.boolean() }).strict();
+/**
+ * Activate / deactivate. Its own route because deactivation is a guardrail
+ * (last-admin protection), a session revocation and a HANDOVER — not a field
+ * edit.
+ *
+ * `reassignToUserId` is the answer to the prompt spec §5.5 describes: the
+ * server refuses to deactivate a user who still owns open records until it is
+ * given somewhere to put them, so the two halves travel in one request and
+ * commit in one transaction. Nothing is ever left owned by a deactivated user
+ * (invariant 1), and there is no window in which it is.
+ */
+export const userSetActiveSchema = z
+  .object({
+    isActive: z.boolean(),
+    reassignToUserId: z.string().uuid('Choose a user').nullish(),
+  })
+  .strict();
 export type UserSetActiveInput = z.infer<typeof userSetActiveSchema>;
 
 /**

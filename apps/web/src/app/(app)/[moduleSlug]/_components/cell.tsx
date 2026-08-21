@@ -120,9 +120,17 @@ export interface RenderCellArgs {
   field: CellField | undefined;
   value: unknown;
   statusById: Map<string, StatusOption>;
+  /**
+   * id → name for every user this page mentions, resolved by the caller in one
+   * query. A USER_LOOKUP column stores an id (the only stable handle for a
+   * person the Admin can rename), and an Owner column reading `9f3c…` is a
+   * column nobody can act on. An id with no entry still renders as itself —
+   * a name that cannot be resolved must not become a gap.
+   */
+  userNames?: ReadonlyMap<string, string>;
 }
 
-export function renderFieldCell({ field, value, statusById }: RenderCellArgs): ReactNode {
+export function renderFieldCell({ field, value, statusById, userNames }: RenderCellArgs): ReactNode {
   // A column with no field behind it can only have come from stale config;
   // fall through to the plain renderer rather than throwing on a read path.
   if (field && field.systemColumn === STATUS_COLUMN) {
@@ -157,7 +165,16 @@ export function renderFieldCell({ field, value, statusById }: RenderCellArgs): R
     return <BooleanCell value={value === true} />;
   }
 
-  if (type === 'USER_LOOKUP' || type === 'RECORD_LINK') {
+  if (type === 'USER_LOOKUP') {
+    if (typeof value !== 'string') return EMPTY;
+    const name = userNames?.get(value);
+    // The title is set HERE rather than left to the table's own tooltip: that
+    // one is derived from the raw value, so it would hover the id over the
+    // name. Falls back to the id, which is what the timeline shows too.
+    return <span title={name ?? value}>{name ?? value}</span>;
+  }
+
+  if (type === 'RECORD_LINK') {
     // TODO(record engine): resolve to the target record's title field and link
     // to it. That needs a batched lookup across modules — the read path the
     // record engine slice introduces — so this shows the stored id until then.

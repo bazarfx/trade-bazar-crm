@@ -3,21 +3,28 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { StatusOption } from '@/app/(app)/[moduleSlug]/_components/cell';
+import {
+  assignable,
+  useDirectory,
+  userLabel,
+} from '@/app/(app)/[moduleSlug]/_components/directory';
+import { useSpecials } from '@/app/(app)/[moduleSlug]/_components/specials';
 import { cn, FieldLabel, Panel, PanelBody, PanelHeader, Select, StatusChip } from '@/components/ui';
 import { api } from '@/lib/client-api';
 
 /**
  * Quick actions and notes — the right column of the record screen (spec §6.5).
  *
- * The only action here today is the status move, because it is the one an
- * agent performs a hundred times a day and the one the whole pipeline is
- * keyed on. It writes through the SAME PATCH the form overlay uses, so the
- * audit entry, the duplicate rules and the permission check are identical
- * whichever door the change came through — a second write path is how a
- * timeline starts missing lines.
+ * Two actions live here: the status move an agent performs a hundred times a
+ * day, and the owner. Both write through the door the rest of the system
+ * already uses — the status through the SAME PATCH the form overlay uses, the
+ * owner through the assign route the bulk action uses — so the audit entry and
+ * the permission check are identical whichever surface the change came from. A
+ * second write path is how a timeline starts missing lines.
  *
- * The options are the module's live statuses, in the order the Admin dragged
- * them. Nothing here reads a status NAME or a module slug.
+ * The status options are the module's live statuses in the Admin's own order;
+ * the owner options are the active users. Nothing here reads a status NAME, a
+ * role name or a module slug.
  */
 
 export interface QuickActionsProps {
@@ -29,6 +36,18 @@ export interface QuickActionsProps {
   statuses: StatusOption[];
   currentStatusId: string | null;
   canEdit: boolean;
+  /**
+   * The Admin's own label for the owner field ("Lead Owner"), or null when
+   * this module has no owner — or when the permission matrix hides that field
+   * from this reader. Both mean the same thing to this panel: no owner block.
+   * Hiding the field and then printing the owner's name beside it would make
+   * the matrix cosmetic, and hiding a field in the UI is not a security
+   * control.
+   */
+  ownerFieldLabel: string | null;
+  currentOwnerId: string | null;
+  /** resolved server-side, so the control never paints a UUID */
+  currentOwnerName: string | null;
   className?: string;
 }
 
@@ -40,6 +59,9 @@ export function QuickActions({
   statuses,
   currentStatusId,
   canEdit,
+  ownerFieldLabel,
+  currentOwnerId,
+  currentOwnerName,
   className,
 }: QuickActionsProps) {
   const router = useRouter();
@@ -85,7 +107,8 @@ export function QuickActions({
     <div className={cn('flex flex-col gap-6 overflow-y-auto', className)}>
       <Panel>
         <PanelHeader title="Quick actions" />
-        <PanelBody>
+        <PanelBody className="flex flex-col gap-6">
+          <div>
           {statusFieldKey === null || statuses.length === 0 ? (
             <p className="text-sm text-body">
               This module has no pipeline, so there is no status to move.
@@ -126,6 +149,17 @@ export function QuickActions({
               ) : null}
             </>
           )}
+          </div>
+
+          {ownerFieldLabel !== null ? (
+            <OwnerControl
+              slug={slug}
+              recordId={recordId}
+              label={ownerFieldLabel}
+              currentOwnerId={currentOwnerId}
+              currentOwnerName={currentOwnerName}
+            />
+          ) : null}
         </PanelBody>
       </Panel>
 
@@ -141,6 +175,137 @@ export function QuickActions({
           </p>
         </PanelBody>
       </Panel>
+    </div>
+  );
+}
+
+/**
+ * The owner, and the one control that moves it.
+ *
+ * Writes through `POST .../records/{id}/assign`, NOT through a PATCH of the
+ * owner field. They are deliberately different doors: reassignment carries its
+ * own permission (REASSIGN_LEADS), its own timeline action (REASSIGNED) and
+ * its own reason, so a role that may edit a record does not thereby acquire
+ * the power to move its ownership — and the timeline can say which of the two
+ * happened.
+ *
+ * Invariant 1 is visible here: there is no "unassign" option and no blank
+ * choice. The engine gave this record an owner the second it was created, and
+ * the only thing this control can do is name a different one.
+ */
+interface OwnerControlProps {
+  slug: string;
+  recordId: string;
+  /** the Admin's own label for the owner field */
+  label: string;
+  currentOwnerId: string | null;
+  currentOwnerName: string | null;
+}
+
+function OwnerControl({
+  slug,
+  recordId,
+  label,
+  currentOwnerId,
+  currentOwnerName,
+}: OwnerControlProps) {
+  const router = useRouter();
+  const specials = useSpecials();
+  // UX only — `assertMayReassign` runs again in the record service, and the
+  // scoped load there answers 404 for a record this actor may not see.
+  const canReassign = specials.has('REASSIGN_LEADS');
+  // Nobody who cannot reassign pays for the directory: a read-only owner line
+  // needs the NAME the server already resolved, not the list of candidates.
+  const directory = useDirectory(canReassign);
+
+  const [value, setValue] = useState<string>(currentOwnerId ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // The server is the truth: after a successful move `router.refresh()` hands
+  // down the stored owner, and adopting it here is what makes a refused write,
+  // a concurrent move by a floor manager and an ARK-driven handover all
+  // converge on the same value.
+  useEffect(() => {
+    setValue(currentOwnerId ?? '');
+  }, [currentOwnerId]);
+
+  const candidates = assignable(directory.users);
+  const chosen = candidates.find((u) => u.id === value);
+  // The stored owner may be absent from the picker — deactivated, or outside
+  // what this actor may enumerate — so the server-resolved name stands in.
+  const shownName = chosen ? userLabel(chosen) : (currentOwnerName ?? currentOwnerId);
+
+  async function reassign(next: string) {
+    if (next === '' || next === value) return;
+    const previous = value;
+    // Paint the move immediately — this is the control the user is looking at
+    // — and roll back to the stored owner if the write is refused.
+    setValue(next);
+    setSaving(true);
+    setError(null);
+    try {
+      await api<{ record: unknown }>(`/api/modules/${slug}/records/${recordId}/assign`, {
+        method: 'POST',
+        body: JSON.stringify({ ownerId: next }),
+      });
+      // The panel and the timeline re-read from the server: the REASSIGNED
+      // entry carrying old owner → new owner belongs at the top of the log,
+      // and only the server can produce it.
+      router.refresh();
+    } catch (err) {
+      setValue(previous);
+      setError(err instanceof Error ? err.message : 'The owner could not be changed');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div>
+      <FieldLabel htmlFor="detail-owner">{label}</FieldLabel>
+
+      {canReassign ? (
+        <Select
+          id="detail-owner"
+          value={value}
+          disabled={saving || directory.loading || candidates.length === 0}
+          onChange={(e) => void reassign(e.target.value)}
+          data-track={`${slug}.detail.owner.select`}
+        >
+          {/* Only reachable when the stored owner is not among the candidates
+              — deactivated, or outside what this actor may enumerate. It is
+              never a value the reader can choose back into, because a record
+              is never unassigned. */}
+          {chosen === undefined ? (
+            <option value={value}>{shownName ?? 'Not set'}</option>
+          ) : null}
+          {candidates.map((user) => (
+            <option key={user.id} value={user.id}>
+              {userLabel(user)}
+            </option>
+          ))}
+        </Select>
+      ) : (
+        // A read-only line rather than a disabled picker: the owner is worth
+        // knowing even to someone who cannot change it, and a greyed-out
+        // control with a tooltip is a worse way to say the same thing.
+        <p className="truncate text-sm text-heading" title={shownName ?? undefined}>
+          {shownName ?? '—'}
+        </p>
+      )}
+
+      {canReassign && !directory.loading && candidates.length === 0 ? (
+        <p className="mt-1 text-xs text-body">
+          There is nobody to hand this to — your role cannot see the people in this workspace.
+        </p>
+      ) : null}
+
+      {error !== null ? (
+        <p role="alert" className="mt-3 rounded bg-error/10 px-3 py-2 text-xs text-error">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

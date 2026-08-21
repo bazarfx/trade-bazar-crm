@@ -23,6 +23,11 @@ export default async function SettingsPage() {
     permissions.specials.has('MANAGE_FIELDS_LAYOUTS') ||
     permissions.specials.has('MANAGE_STATUSES');
   const canManageRoles = actor.isAdmin || permissions.specials.has('MANAGE_USERS_ROLES');
+  // Lead routing is Admin-only and deliberately not delegable: nominating the
+  // senior pool decides where every ARK lead in the business lands, which is
+  // broader than any module-scoped special in the matrix. The same condition
+  // `canManagePlatformSettings` enforces server-side.
+  const canManageRouting = actor.isAdmin;
   if (!(canConfigureModules || canManageRoles)) redirect('/');
 
   // Skipped entirely for someone who only administers roles — a query whose
@@ -74,6 +79,27 @@ export default async function SettingsPage() {
               className="shrink-0 text-sm text-primary hover:underline"
             >
               Open roles →
+            </Link>
+          </div>
+        </Panel>
+      )}
+
+      {canManageRouting && (
+        <Panel className="overflow-hidden">
+          <div className="flex items-center justify-between gap-6 px-6 py-5">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-heading">Assignment</p>
+              <p className="mt-1 text-sm text-body">
+                Which role is the senior pool and which group catches everything else. Leave
+                either unset and those leads route to the Admin — still owned, but by one person.
+              </p>
+            </div>
+            <Link
+              href="/settings/assignment"
+              data-track="settings.landing.assignment.open"
+              className="shrink-0 text-sm text-primary hover:underline"
+            >
+              Open assignment →
             </Link>
           </div>
         </Panel>

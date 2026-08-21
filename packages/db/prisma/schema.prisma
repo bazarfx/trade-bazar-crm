@@ -302,6 +302,30 @@ model Layout {
   @@unique([moduleId, target, roleId])
 }
 
+/// Platform configuration: one row per namespaced key, value in JSON.
+/// Keys and value shapes are declared once in packages/shared/src/settings.ts.
+///
+/// WHY THIS IS NOT A BREACH OF INVARIANT 3 ("the database stays firm"):
+/// invariant 3 forbids the SCHEMA growing a column every time the client wants
+/// another field on a record. This table is the opposite of that. It holds no
+/// customer data and defines no customer field — it is where PLATFORM
+/// behaviour stores POINTERS at Admin-created rows, so that behaviour can be
+/// re-aimed at runtime. 'assignment.seniorRoleId' holds a Role id, never the
+/// word "Senior": the Admin may rename, retire or replace that role and
+/// routing follows, with no migration and no deploy.
+///
+/// The two alternatives both fail: a column per setting is exactly the schema
+/// growth invariant 3 forbids, and a FieldDefinition-governed field is the
+/// wrong home because these values belong to the platform, not to any one
+/// module's records. Adding a setting therefore adds a KEY, never a column —
+/// which is what keeps the schema firm.
+model PlatformSetting {
+  /// namespaced and stable, e.g. "assignment.seniorRoleId" (see SETTING_KEYS)
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // PEOPLE — roles, permissions, departments, groups, users
 // ═══════════════════════════════════════════════════════════════════

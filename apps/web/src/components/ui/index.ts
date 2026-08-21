@@ -18,4 +18,4 @@ export { Panel, PanelBody, PanelHeader } from './panel';
 export type { PanelBodyProps, PanelHeaderProps } from './panel';
 
 export { DataTable } from './table';
-export type { DataTableColumn, DataTableProps } from './table';
+export type { DataTableColumn, DataTableProps, DataTableSelection } from './table';

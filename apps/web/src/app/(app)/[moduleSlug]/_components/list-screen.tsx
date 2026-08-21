@@ -3,12 +3,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import type { ColumnSpec, FilterNode, SavedViewDto, SortSpec } from '@crm/shared';
+import type { BulkAssignResult, ColumnSpec, FilterNode, SavedViewDto, SortSpec } from '@crm/shared';
 import { api } from '@/lib/client-api';
-import { Panel, PanelBody, type DataTableColumn } from '@/components/ui';
+import {
+  Button,
+  Panel,
+  PanelBody,
+  type DataTableColumn,
+  type DataTableSelection,
+} from '@/components/ui';
+import { BulkReassignOverlay } from './bulk-reassign-overlay';
 import type { CellField, StatusOption } from './cell';
+import { nameMap, useDirectory } from './directory';
 import { FilterPanel, type FilterField, type RailView, type RelatedModule } from './filter-panel';
 import { draftsFrom } from './filter-model';
+import { useSpecials } from './specials';
 import {
   buildListHref,
   encodeFilterHash,
@@ -43,6 +52,8 @@ import { SaveViewOverlay } from './save-view-overlay';
  */
 export interface ListScreenProps {
   slug: string;
+  /** module.label — SINGULAR, for naming one row ("Select lead"). */
+  label: string;
   labelPlural: string;
   filterFields: FilterField[];
   relatedModules: RelatedModule[];
@@ -68,6 +79,21 @@ export interface ListScreenProps {
   fieldBuilderHref: string | null;
   /** a view or sort key the server could not apply, said in the user's words */
   serverError: string | null;
+  /**
+   * Records in this module carry an owner, so they can be reassigned.
+   *
+   * A property of the module's STORAGE, resolved server-side — a module whose
+   * table has no owner column has nothing to reassign, and offering the action
+   * there would produce a button that always answers 422.
+   */
+  hasOwner: boolean;
+  /**
+   * id → name for every user the SERVER's rows mention, resolved in one query
+   * on the page. Sent as pairs rather than a Map because this crosses the RSC
+   * boundary, and as data rather than a second fetch so the owner column never
+   * paints a UUID and then swaps it for a name.
+   */
+  userNames: [string, string][];
 }
 
 interface AppliedFilter {
@@ -78,6 +104,7 @@ interface AppliedFilter {
 
 export function ListScreen({
   slug,
+  label,
   labelPlural,
   filterFields,
   relatedModules,
@@ -95,6 +122,8 @@ export function ListScreen({
   emptyMessage,
   fieldBuilderHref,
   serverError,
+  hasOwner,
+  userNames,
 }: ListScreenProps) {
   const router = useRouter();
 
@@ -105,6 +134,18 @@ export function ListScreen({
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [focusToken, setFocusToken] = useState(0);
+
+  /** Ticked row ids. Page-scoped — see the effect that clears it. */
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+  const [reassigning, setReassigning] = useState(false);
+  const [bulkNotice, setBulkNotice] = useState<string | null>(null);
+  /**
+   * Bumped after a bulk move, to re-run the client's own query.
+   * `router.refresh()` re-renders the server component and therefore fixes the
+   * server-owned path, but the filtered path's rows come from a POST this
+   * component owns and nothing else can make it ask again.
+   */
+  const [reloadToken, setReloadToken] = useState(0);
 
   /**
    * Read the applied filter out of the URL — the query flag says whether there
@@ -199,7 +240,7 @@ export function ListScreen({
     // sortParam stands in for query.sort: an object identity would refetch on
     // every render, and these five primitives are the whole query.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter, slug, sortParam, query.search, query.page, query.size]);
+  }, [filter, slug, sortParam, query.search, query.page, query.size, reloadToken]);
 
   /** True while the URL says a filter is in effect, whoever has the rows. */
   const clientOwned = query.filtered || filter !== null || filterError !== null;
@@ -207,6 +248,92 @@ export function ListScreen({
 
   const visibleRows = clientOwned ? (result?.records ?? []) : rows;
   const visibleTotal = clientOwned ? (result?.total ?? 0) : total;
+
+  // ── who may reassign, and to whom ───────────────────────────────────────
+
+  // UX only. Both permissions are asserted again in the record service, and
+  // the scope filter runs in the repository whatever this set says.
+  const specials = useSpecials();
+  const canBulkReassign =
+    hasOwner && specials.has('REASSIGN_LEADS') && specials.has('BULK_OPERATIONS');
+
+  const serverNames = useMemo(() => new Map(userNames), [userNames]);
+  const hasUserColumn = useMemo(
+    // Asked of the TYPE, so every user column resolves — not just the owner.
+    () => cellFields.some((f) => f.type === 'USER_LOOKUP'),
+    [cellFields],
+  );
+  /**
+   * The directory is fetched only while the CLIENT owns the rows. On the
+   * server-rendered path every id on screen already has a name from the page,
+   * and a fetch would buy nothing; on the filtered path the rows came from a
+   * POST the server never rendered, so their ids are not in that map.
+   */
+  const directory = useDirectory(hasUserColumn && clientOwned);
+  const names = useMemo(() => {
+    if (directory.users.length === 0) return serverNames;
+    const merged = new Map(serverNames);
+    for (const [id, name] of nameMap(directory.users)) merged.set(id, name);
+    return merged;
+  }, [serverNames, directory.users]);
+
+  /**
+   * The selection is scoped to what is on screen, and dropped whenever that
+   * changes. Carrying ticks across a page turn would let "12 selected" mean
+   * eleven rows nobody can see plus one they can — a bulk action nobody could
+   * review before running it.
+   */
+  const querySignature = [
+    query.view ?? '',
+    query.page,
+    query.size,
+    query.search ?? '',
+    sortParam ?? '',
+    filter?.key ?? '',
+  ].join('|');
+  useEffect(() => {
+    setSelected(new Set());
+  }, [querySignature]);
+
+  const toggleRow = useCallback((id: string, checked: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+
+  function toggleAllRows(checked: boolean) {
+    setSelected(checked ? new Set(visibleRows.map((row) => row.id)) : new Set());
+  }
+
+  const selection: DataTableSelection | null = canBulkReassign
+    ? {
+        selected,
+        onToggle: toggleRow,
+        onToggleAll: toggleAllRows,
+        // Composed from ModuleDefinition, so a screen reader says "Select
+        // invoice" the day an Admin adds that module.
+        label: `Select this ${label.toLowerCase()}`,
+      }
+    : null;
+
+  const selectedIds = useMemo(() => [...selected], [selected]);
+
+  function onReassigned(res: BulkAssignResult) {
+    setSelected(new Set());
+    setBulkNotice(
+      res.skipped === 0
+        ? `${res.updated} ${res.updated === 1 ? 'record' : 'records'} reassigned.`
+        : `${res.updated} reassigned, ${res.skipped} left unchanged — outside your view scope, ` +
+            'already owned by that user, or no longer in this module.',
+    );
+    // Both paths, because only one of them owns the rows and this component
+    // does not branch on which.
+    router.refresh();
+    setReloadToken((n) => n + 1);
+  }
 
   /**
    * What the rail shows. An ad-hoc filter wins over the applied view's, which
@@ -398,6 +525,52 @@ export function ListScreen({
             </p>
           ) : null}
 
+          {/* The bulk bar. Present only while something is ticked — a
+              permanent empty bar would take a row's worth of height off every
+              list for an action nobody is performing. */}
+          {selection !== null && selected.size > 0 ? (
+            <div className="flex flex-wrap items-center gap-3 border-b border-border bg-background px-3 py-2">
+              <span className="text-xs font-medium text-heading">
+                {selected.size} selected on this page
+              </span>
+              <div className="ml-auto flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setReassigning(true)}
+                  data-track={`${slug}.list.bulk.reassign.open`}
+                >
+                  Reassign
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSelected(new Set())}
+                  data-track={`${slug}.list.bulk.clear.click`}
+                >
+                  Clear
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          {bulkNotice !== null ? (
+            <div
+              role="status"
+              className="flex items-center justify-between gap-3 border-b border-border px-3 py-2 text-xs text-heading"
+            >
+              <span>{bulkNotice}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setBulkNotice(null)}
+                data-track={`${slug}.list.bulk.notice.dismiss`}
+              >
+                Dismiss
+              </Button>
+            </div>
+          ) : null}
+
           {columns.length === 0 ? (
             <PanelBody>
               <p className="text-sm text-body">
@@ -426,6 +599,8 @@ export function ListScreen({
               ? {}
               : { sort: { key: activeSort.fieldKey, direction: activeSort.direction } })}
             onSortColumn={sortBy}
+            userNames={names}
+            {...(selection === null ? {} : { selection })}
             emptyMessage={
               problem !== null
                 ? // Nothing is shown while a filter cannot be applied, and
@@ -448,6 +623,16 @@ export function ListScreen({
           )}
         </Panel>
       </div>
+
+      {reassigning && selectedIds.length > 0 ? (
+        <BulkReassignOverlay
+          slug={slug}
+          labelPlural={labelPlural}
+          recordIds={selectedIds}
+          onDone={onReassigned}
+          onClose={() => setReassigning(false)}
+        />
+      ) : null}
 
       {saving ? (
         <SaveViewOverlay

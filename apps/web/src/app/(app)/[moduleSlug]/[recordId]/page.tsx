@@ -92,6 +92,7 @@ export default async function RecordDetailPage({
       label: true,
       labelPlural: true,
       isCore: true,
+      hasOwner: true,
       hasTimeline: true,
       recordTitleField: true,
     },
@@ -150,6 +151,15 @@ export default async function RecordDetailPage({
   const statusColumn = storage.shape.statusColumn;
   const statusField = statusColumn ? fields.find((f) => f.systemColumn === statusColumn) : undefined;
   const currentStatusId = statusField ? text(record[statusField.key]) : null;
+
+  // Same question for the owner, asked the same way — of the STORAGE, never of
+  // the slug. `fields` has already had the hidden ones stripped, so a role the
+  // matrix hides the owner field from finds nothing here and gets no owner
+  // control; hiding a field in the UI is not a security control, and printing
+  // the owner beside a hidden field would make the matrix cosmetic.
+  const ownerColumn = mod.hasOwner ? storage.shape.ownerColumn : null;
+  const ownerField = ownerColumn ? fields.find((f) => f.systemColumn === ownerColumn) : undefined;
+  const currentOwnerId = ownerField ? text(record[ownerField.key]) : null;
 
   // Every user id this record or its history mentions, resolved to a name in
   // ONE query. A timeline that says `9f3c…` instead of "Priya Nair" is not a
@@ -277,6 +287,17 @@ export default async function RecordDetailPage({
           statuses={statusRows}
           currentStatusId={currentStatusId}
           canEdit={canEdit}
+          // The Admin's own label, never a hardcoded "Owner": the field is
+          // called "Lead Owner" on Leads and whatever they rename it to next.
+          ownerFieldLabel={ownerField?.label ?? null}
+          currentOwnerId={currentOwnerId}
+          // Resolved in the same batched lookup the timeline uses, so the
+          // control opens on a NAME rather than flashing a UUID first.
+          currentOwnerName={
+            currentOwnerId === null
+              ? null
+              : (users.find((u) => u.id === currentOwnerId)?.fullName ?? null)
+          }
           className="w-80 shrink-0"
         />
       </div>

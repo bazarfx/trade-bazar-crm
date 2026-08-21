@@ -27,14 +27,17 @@ import 'server-only';
 import { prisma, Prisma } from '@crm/db';
 import { PermissionEngine, type AuditEntry, type FieldMeta } from '@crm/core';
 import {
+  BULK_ASSIGN_MAX,
   FIELD_TYPE_SPECS,
   buildRecordSchema,
   normalisePhone,
+  type BulkAssignResult,
   type FieldDef,
   type FieldType,
   type FieldValidation,
 } from '@crm/shared';
 import type { Principal } from '@/lib/auth/actor';
+import { ASSIGNMENT_REASON_KEY, assignOwner, type AssignmentReason } from '@/lib/assignment';
 import { auditWithin } from '@/lib/audit';
 import { assertModuleReadAccess } from '@/lib/config/access';
 import { ConfigError, requireModule, type Tx } from '@/lib/config/service';
@@ -42,6 +45,7 @@ import {
   findRecordById,
   listRecords,
   recordDelegate,
+  scopedWhere,
   selectFor,
   storageFor,
   type ModuleRef,
@@ -411,6 +415,39 @@ function mayChooseOwner(ctx: ModuleContext): boolean {
   return ctx.engine.hasSpecial('REASSIGN_LEADS');
 }
 
+/**
+ * A named owner must be an ACTIVE user.
+ *
+ * The foreign key already proves the row exists, so this is about the other
+ * half: a deactivated user keeps their history (invariant 4) but must never
+ * receive new work. Handing them a lead is the same dead end as leaving it
+ * unassigned — nobody is going to call it — and spec §5.5 has the system
+ * moving work OFF a deactivated user, not onto one.
+ */
+async function assertAssignableOwner(tx: Tx, userId: string): Promise<void> {
+  const user = await tx.user.findFirst({
+    where: { id: userId, isActive: true },
+    select: { id: true },
+  });
+  if (!user) {
+    throw new ConfigError('That user is not active and cannot own records', 422, 'VALIDATION');
+  }
+}
+
+/**
+ * Who owns a new record, and WHY.
+ *
+ * The reason is carried out of the decision rather than inferred later,
+ * because it is what the timeline renders: "why did this lead land with
+ * Vikram" is answered by the record itself or by a support ticket, and the
+ * whole point of spec §6.5 is that it is the former.
+ */
+interface OwnerDecision {
+  ownerId: string;
+  groupId: string | null;
+  reason: AssignmentReason;
+}
+
 // ── read ──────────────────────────────────────────────────────────────────
 
 /** The list, for a module named by slug. Storage, scope and serialisation all
@@ -474,21 +511,38 @@ export async function createRecord(
   let values = applyDefaults(writable, asObject(input));
 
   // Owner: nothing is EVER unassigned (invariant 1). A module that declares an
-  // owner and lives in a table that carries one always gets a real user id —
-  // the actor's own, unless they hold the reassignment permission and named
-  // someone else.
-  //
-  // TODO(assignment engine): this is the placeholder for `AssignmentStrategy`
-  // (spec §6.7) — round-robin within the matching language group, Seniors of
-  // that language for ARK leads, default pool, then Admin. That engine is its
-  // own slice; until it lands the creating user is the fallback, and the one
-  // thing that must never change is that this writes a null.
-  const ownerField = fieldForColumn(writable, storage.shape.ownerColumn);
-  if (module.hasOwner && ownerField) {
-    const supplied = str(values[ownerField.key]);
-    values[ownerField.key] =
-      supplied && mayChooseOwner(ctx) ? supplied : principal.actor.userId;
-  }
+  // owner and lives in a table that carries one always gets a real, ACTIVE
+  // user id — the one a permitted actor named, or the one the assignment
+  // engine chose (spec §6.7). Both are decided inside the transaction below;
+  // here we only work out which of the two applies and what the engine needs
+  // to route on.
+  const ownerColumn = storage.shape.ownerColumn;
+  const groupColumn = storage.shape.groupColumn;
+  const ownerField = fieldForColumn(writable, ownerColumn);
+  const groupField = fieldForColumn(writable, groupColumn);
+  const assigns = module.hasOwner && ownerColumn !== null;
+
+  // A supplied owner counts only from an actor who may choose one. From
+  // anybody else it is IGNORED rather than rejected: the create must not fail
+  // because a form posted the field it was shown.
+  const namedOwner = ownerField && mayChooseOwner(ctx) ? str(values[ownerField.key]) : null;
+
+  // The two facts the strategy routes on, read from the values this actor is
+  // ALLOWED to write — a field they may not set must not be able to steer
+  // routing. A module carrying neither still assigns: the empty language and
+  // the CAMPAIGN default fall through to the pool and then to the Admin, which
+  // is why `lib/assignment` owns that decision and this file does not branch.
+  const languageField = fieldForColumn(writable, storage.shape.languageColumn);
+  const sourceField = fieldForColumn(writable, storage.shape.sourceColumn);
+  const language = languageField ? str(values[languageField.key]) : null;
+  const source = sourceField ? str(values[sourceField.key]) : null;
+
+  // The key an ownership change is logged under: the Admin's own field key
+  // when a field maps to the column, else the column itself. Using the field
+  // key is what lets `visibleChanges` strip the entry for a role that may not
+  // see the Owner field — a timeline is a read like any other.
+  const ownerKey = ownerField?.key ?? ownerColumn;
+  const groupKey = groupField?.key ?? groupColumn;
 
   // Status: the module's first live status, unless one was chosen. Set before
   // validation because a module's status field is typically required — the
@@ -506,65 +560,142 @@ export async function createRecord(
   values = normalisePhones(writable, values);
 
   // The ONE validation path. Everything above only decided what to hand it.
+  // Built here and PARSED inside the transaction, because the owner the
+  // schema validates is not known until the rota has been advanced.
   const refOptions = await referenceOptionsFor(ctx, writable);
-  const parsed = buildRecordSchema(
-    writable.map((f) => toFieldDef(f, refOptions)),
-  ).parse(values) as Row;
-
-  const { columns, json } = storage.resolver.partition(parsed);
-  if (!storage.shape.hasJsonContainer && Object.keys(json).length > 0) {
-    // The table has no JSONB container, so a field not mapped to a column has
-    // nowhere to go. Silently dropping it would lose data on save.
-    throw new ConfigError(
-      'This module cannot store custom fields — every field must map to a column',
-      422,
-      'GUARDRAIL',
-    );
-  }
-
-  const data: Row = {
-    ...storage.writeDiscriminator(),
-    ...columns,
-    ...(storage.shape.hasJsonContainer
-      ? { [storage.resolver.jsonColumn]: plain(json) }
-      : {}),
-    ...(storage.shape.createdByColumn
-      ? { [storage.shape.createdByColumn]: principal.actor.userId }
-      : {}),
-  };
-
+  const schema = buildRecordSchema(writable.map((f) => toFieldDef(f, refOptions)));
   const select = selectFor(storage, ctx.metas);
 
-  // The row, its RECORD_CREATED entry and any duplicate flag commit together
-  // or not at all: a record with no creation entry has no timeline origin, and
-  // an entry for a row that rolled back is a lie the log can never correct.
+  // The row, its RECORD_CREATED and ASSIGNED entries, the rota advance behind
+  // the assignment and any duplicate flag commit together or not at all: a
+  // record with no creation entry has no timeline origin, an entry for a row
+  // that rolled back is a lie the log can never correct, and a rota position
+  // consumed by a failed insert silently skips somebody's turn.
   const row = await writing(() =>
-    prisma.$transaction(async (tx) => {
-      const created = await delegateOrThrow(tx, ctx).create({ data, select });
-      const id = String(created['id']);
-      const logger = auditWithin(tx);
+    prisma.$transaction(
+      async (tx) => {
+        let decision: OwnerDecision | null = null;
+        if (assigns) {
+          if (namedOwner) {
+            await assertAssignableOwner(tx, namedOwner);
+            decision = { ownerId: namedOwner, groupId: null, reason: 'manual' };
+          } else {
+            const assigned = await assignOwner(tx, { moduleSlug, language, source });
+            decision = {
+              ownerId: assigned.ownerId,
+              groupId: assigned.groupId,
+              reason: assigned.reason,
+            };
+          }
 
-      // The whole field set as `null -> value`, so the first timeline entry is
-      // also the record's opening snapshot.
-      const changes: Record<string, { from: unknown; to: unknown }> = {};
-      for (const [key, value] of Object.entries(auditValues(writable, parsed))) {
-        changes[key] = { from: null, to: value };
-      }
+          // Through `values` when a field maps to the column, so the owner and
+          // the group are validated like any other value and appear in the
+          // record's opening snapshot. The group the engine chose wins over a
+          // supplied one — it is the team whose rota just handed out this
+          // record, and the two disagreeing would make the round-robin unreadable.
+          if (ownerField) values[ownerField.key] = decision.ownerId;
+          if (groupField && decision.groupId) values[groupField.key] = decision.groupId;
+        }
 
-      await logger.log({
-        entityType: storage.shape.entityType,
-        entityId: id,
-        action: 'RECORD_CREATED',
-        actorType: 'USER',
-        actorId: principal.actor.userId,
-        changes,
-        ipAddress: meta.ipAddress ?? null,
-        userAgent: meta.userAgent ?? null,
-      });
+        const parsed = schema.parse(values) as Row;
 
-      await flagDuplicates(tx, ctx, { id, values: parsed, meta, actorId: principal.actor.userId });
-      return created;
-    }),
+        const { columns, json } = storage.resolver.partition(parsed);
+        if (!storage.shape.hasJsonContainer && Object.keys(json).length > 0) {
+          // The table has no JSONB container, so a field not mapped to a column
+          // has nowhere to go. Silently dropping it would lose data on save.
+          throw new ConfigError(
+            'This module cannot store custom fields — every field must map to a column',
+            422,
+            'GUARDRAIL',
+          );
+        }
+
+        const data: Row = {
+          ...storage.writeDiscriminator(),
+          ...columns,
+          ...(storage.shape.hasJsonContainer
+            ? { [storage.resolver.jsonColumn]: plain(json) }
+            : {}),
+          ...(storage.shape.createdByColumn
+            ? { [storage.shape.createdByColumn]: principal.actor.userId }
+            : {}),
+          // The owner is written to the COLUMN, whatever the module's fields say.
+          // Invariant 1 is a storage guarantee, not a form guarantee: a role that
+          // sees the Owner field as readonly or hidden has no writable field to
+          // carry it, and the row would reach a NOT NULL column with nothing in
+          // it. The value is the same one `values` carries when a field does map.
+          ...(decision && ownerColumn ? { [ownerColumn]: decision.ownerId } : {}),
+          ...(decision?.groupId && groupColumn ? { [groupColumn]: decision.groupId } : {}),
+        };
+
+        const created = await delegateOrThrow(tx, ctx).create({ data, select });
+        const id = String(created['id']);
+        const logger = auditWithin(tx);
+
+        // The whole field set as `null -> value`, so the first timeline entry is
+        // also the record's opening snapshot.
+        const changes: Record<string, { from: unknown; to: unknown }> = {};
+        for (const [key, value] of Object.entries(auditValues(writable, parsed))) {
+          changes[key] = { from: null, to: value };
+        }
+
+        await logger.log({
+          entityType: storage.shape.entityType,
+          entityId: id,
+          action: 'RECORD_CREATED',
+          actorType: 'USER',
+          actorId: principal.actor.userId,
+          changes,
+          ipAddress: meta.ipAddress ?? null,
+          userAgent: meta.userAgent ?? null,
+        });
+
+        // WHY it landed there — its own entry, because the opening snapshot says
+        // who owns the record and this says how that was decided (spec §6.7:
+        // "every assignment and reassignment"). The reason travels under a key no
+        // field can ever have, so it survives the hidden-field strip and the
+        // timeline still explains itself to a reader who cannot see the Owner.
+        if (decision && ownerKey) {
+          await logger.log({
+            entityType: storage.shape.entityType,
+            entityId: id,
+            action: 'ASSIGNED',
+            actorType: 'USER',
+            actorId: principal.actor.userId,
+            changes: {
+              [ownerKey]: { from: null, to: decision.ownerId },
+              ...(decision.groupId && groupKey
+                ? { [groupKey]: { from: null, to: decision.groupId } }
+                : {}),
+              [ASSIGNMENT_REASON_KEY]: { from: null, to: decision.reason },
+            },
+            ipAddress: meta.ipAddress ?? null,
+            userAgent: meta.userAgent ?? null,
+          });
+        }
+
+        await flagDuplicates(tx, ctx, { id, values: parsed, meta, actorId: principal.actor.userId });
+        return created;
+      },
+      // Not Prisma's 5s default, and the reason is the rota.
+      //
+      // `nextIndex` advances the round-robin with an upsert that takes a ROW
+      // LOCK on the rota key, and that lock is held until this transaction
+      // commits — deliberately, so a create that rolls back does not consume
+      // somebody's turn. The consequence is that concurrent creates against the
+      // SAME group serialise for the length of one create, and a create here is
+      // ~6 round trips to a pooled database in another region. Ten parallel
+      // campaign leads for one language therefore take an order of magnitude
+      // longer than one, and on the 5s default the tail of the burst died with
+      // P2028 — a lead lost to a 500 for no reason but a timer.
+      //
+      // 30s covers a burst well past anything a floor produces by hand. Genuine
+      // ARK volume does not arrive through this path at all: the webhook
+      // persists raw and the worker drains it (CLAUDE.md, "background work never
+      // runs in a route handler"), which is where a burst larger than this
+      // belongs.
+      { timeout: 30_000, maxWait: 10_000 },
+    ),
   );
 
   const flat = storage.resolver.flatten(row);
@@ -831,6 +962,230 @@ export async function updateRecord(
   const flat = storage.resolver.flatten(row);
   flat['id'] = row['id'];
   return serialiseRecord(ctx.engine, moduleSlug, flat, ctx.metas);
+}
+
+// ── reassign (spec §6.7) ──────────────────────────────────────────────────
+
+/**
+ * Manual reassignment is its own permission, and deliberately NOT `edit`.
+ *
+ * A floor manager who may move work between reps is not necessarily allowed to
+ * change a lead's phone number, and the reverse is just as true — spec §5.1
+ * lists "Reassign leads" as a special precisely because it does not follow the
+ * module matrix. The actor still has to be able to SEE the record: that check
+ * is the scope filter in the repository, which is what makes an out-of-scope
+ * record a 404 here rather than a 403 that confirms it exists.
+ */
+function assertMayReassign(ctx: ModuleContext): void {
+  if (!ctx.engine.hasSpecial('REASSIGN_LEADS')) {
+    throw new ConfigError('Requires the "REASSIGN_LEADS" permission', 403, 'FORBIDDEN');
+  }
+}
+
+/** The column a reassignment writes, or a refusal. A module whose table has
+ *  no owner has nothing to reassign, and pretending otherwise would throw at
+ *  query time against a column that does not exist. */
+function ownerColumnOrThrow(ctx: ModuleContext): string {
+  const column = ctx.storage.shape.ownerColumn;
+  if (!ctx.module.hasOwner || column === null) {
+    throw new ConfigError('Records in this module have no owner', 422, 'GUARDRAIL');
+  }
+  return column;
+}
+
+/** Reassignments log under the Admin's own field key when a field maps to the
+ *  owner column, so a role that cannot see the Owner field cannot read the
+ *  before/after off the timeline either. */
+function ownerAuditKey(ctx: ModuleContext, ownerColumn: string): string {
+  return fieldForColumn(ctx.fields, ownerColumn)?.key ?? ownerColumn;
+}
+
+/**
+ * Move ONE record to a new owner.
+ *
+ * The group is deliberately left alone: it is the language team the record
+ * belongs to (spec §6.2, "auto-set from language group, editable"), not a
+ * mirror of whoever currently holds it, and rewriting it here would quietly
+ * move records between GROUP-scoped teams on every reassignment.
+ */
+export async function reassignRecord(
+  principal: Principal,
+  moduleSlug: string,
+  id: string,
+  ownerId: string,
+  meta: AuditMeta = {},
+): Promise<RecordRow> {
+  const ctx = await moduleContext(principal, moduleSlug);
+  assertMayReassign(ctx);
+
+  const { storage } = ctx;
+  const ownerColumn = ownerColumnOrThrow(ctx);
+  const auditKey = ownerAuditKey(ctx, ownerColumn);
+  const select = selectFor(storage, ctx.metas);
+
+  const row = await writing(() =>
+    prisma.$transaction(async (tx) => {
+      // Proved inside the transaction: a target deactivated between the check
+      // and the write would leave the record owned by somebody who can never
+      // work it (spec §5.5 moves work OFF such a user, never onto one).
+      await assertAssignableOwner(tx, ownerId);
+
+      // Loaded through the SAME scope filter as the list. Out of scope and
+      // non-existent are one answer — a 403 on a record you may not see
+      // confirms that it exists.
+      const before = await findRecordById({
+        module: ctx.module,
+        fields: ctx.metas,
+        engine: ctx.engine,
+        actor: principal.actor,
+        id,
+        client: tx,
+      });
+      if (!before) throw notFound();
+
+      const from = str(before.raw[ownerColumn]);
+      // Already there: no write and NO timeline entry. The timeline is what
+      // happened, not what was submitted.
+      if (from === ownerId) return before.raw;
+
+      const updated = await delegateOrThrow(tx, ctx).update({
+        where: { id },
+        data: { [ownerColumn]: ownerId },
+        select,
+      });
+
+      await auditWithin(tx).log({
+        entityType: storage.shape.entityType,
+        entityId: id,
+        action: 'REASSIGNED',
+        actorType: 'USER',
+        actorId: principal.actor.userId,
+        // Old owner -> new owner, plus WHY, exactly as spec §6.7 requires.
+        changes: {
+          [auditKey]: { from, to: ownerId },
+          [ASSIGNMENT_REASON_KEY]: { from: null, to: 'manual' satisfies AssignmentReason },
+        },
+        ipAddress: meta.ipAddress ?? null,
+        userAgent: meta.userAgent ?? null,
+      });
+
+      return updated;
+    }),
+  );
+
+  const flat = storage.resolver.flatten(row);
+  flat['id'] = row['id'];
+  return serialiseRecord(ctx.engine, moduleSlug, flat, ctx.metas);
+}
+
+/**
+ * Move MANY records to a new owner — the list screen's bulk action.
+ *
+ * Two things make this safe rather than fast:
+ *
+ *  - **Out-of-scope ids are EXCLUDED, not refused.** The read goes through the
+ *    same `scopedWhere` as the list, so a selection that spanned records the
+ *    actor cannot see moves the ones they can and reports the rest as skipped.
+ *    Refusing the batch would leak the fact that those ids exist; moving them
+ *    would leak far worse.
+ *  - **Every record gets its OWN audit row.** The timeline is per record
+ *    (invariant 2), so a bulk move is N entries, not one — a rep opening a
+ *    lead has to see that it arrived, and from whom.
+ */
+export async function reassignRecords(
+  principal: Principal,
+  moduleSlug: string,
+  recordIds: string[],
+  ownerId: string,
+  meta: AuditMeta = {},
+): Promise<BulkAssignResult> {
+  const ctx = await moduleContext(principal, moduleSlug);
+  assertMayReassign(ctx);
+  // Two permissions, because this is two capabilities: moving ownership, and
+  // doing it to a selection at once (spec §5.1).
+  if (!ctx.engine.hasSpecial('BULK_OPERATIONS')) {
+    throw new ConfigError('Requires the "BULK_OPERATIONS" permission', 403, 'FORBIDDEN');
+  }
+
+  const { storage } = ctx;
+  const ownerColumn = ownerColumnOrThrow(ctx);
+  const auditKey = ownerAuditKey(ctx, ownerColumn);
+
+  // A payload repeating an id is not two records — and the dedupe has to
+  // happen before the cap, or a client could pad a selection past it.
+  const requested = [...new Set(recordIds)];
+  if (requested.length > BULK_ASSIGN_MAX) {
+    // Asserted here as well as in the schema: this service is the contract for
+    // the worker's import path too, and that caller never sees the route.
+    throw new ConfigError(
+      `One reassignment can move at most ${BULK_ASSIGN_MAX} records`,
+      422,
+      'CAP_EXCEEDED',
+      { limit: BULK_ASSIGN_MAX },
+    );
+  }
+  if (requested.length === 0) return { updated: 0, skipped: 0 };
+
+  const updated = await writing(() =>
+    prisma.$transaction(
+      async (tx) => {
+        await assertAssignableOwner(tx, ownerId);
+        const delegate = delegateOrThrow(tx, ctx);
+
+        const rows = await delegate.findMany({
+          // AND, never a flat merge: `scopedWhere` can itself carry an `id`
+          // key — that is how the engine says "see nothing" — and spreading
+          // the selection over it would turn a deny into a full move. Same
+          // reasoning as `combine()` in the repository.
+          where: { AND: [scopedWhere(storage, ctx.engine, moduleSlug), { id: { in: requested } }] },
+          select: { id: true, [ownerColumn]: true },
+          orderBy: [{ id: 'asc' }],
+          take: requested.length,
+          skip: 0,
+        });
+
+        // Records already owned by the target need no write and no entry; they
+        // count as skipped because nothing happened to them.
+        const moving = rows.filter((row) => str(row[ownerColumn]) !== ownerId);
+        if (moving.length === 0) return 0;
+
+        const ids = moving.map((row) => String(row['id']));
+        // Id-scoped, and safely so: these ids came out of the scoped read a
+        // few lines above, inside THIS transaction. Nothing here widens.
+        await delegate.updateMany({
+          where: { id: { in: ids } },
+          data: { [ownerColumn]: ownerId },
+        });
+
+        await auditWithin(tx).logMany(
+          moving.map((row) => ({
+            entityType: storage.shape.entityType,
+            entityId: String(row['id']),
+            action: 'REASSIGNED' as const,
+            actorType: 'USER' as const,
+            actorId: principal.actor.userId,
+            changes: {
+              [auditKey]: { from: str(row[ownerColumn]), to: ownerId },
+              [ASSIGNMENT_REASON_KEY]: { from: null, to: 'manual' satisfies AssignmentReason },
+            },
+            ipAddress: meta.ipAddress ?? null,
+            userAgent: meta.userAgent ?? null,
+          })),
+        );
+
+        return moving.length;
+      },
+      // Three statements, but the last two carry up to BULK_ASSIGN_MAX rows
+      // each across a pooled cross-region connection. Prisma's 5s default is
+      // sized for a single-row write; a rollback here would be a bulk action
+      // that appeared to work.
+      { timeout: 30_000, maxWait: 5_000 },
+    ),
+  );
+
+  // Honest arithmetic: everything the actor asked for that did not move —
+  // out of scope, soft-deleted, unknown, or already owned by the target.
+  return { updated, skipped: requested.length - updated };
 }
 
 // ── delete ────────────────────────────────────────────────────────────────

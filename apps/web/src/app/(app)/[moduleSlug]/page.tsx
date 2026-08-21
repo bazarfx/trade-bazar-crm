@@ -6,7 +6,7 @@ import { getPrincipal } from '@/lib/auth/session';
 import { canReadModuleConfig } from '@/lib/config/access';
 import { ConfigError } from '@/lib/config/service';
 import { listViews } from '@/lib/config/views';
-import { listRecords } from '@/lib/records/list';
+import { listRecords, storageFor } from '@/lib/records/list';
 import type { DataTableColumn } from '@/components/ui';
 import { ListActions } from './_components/list-actions';
 import { ListScreen } from './_components/list-screen';
@@ -179,7 +179,10 @@ export default async function ModulePage({
 
   const mod = await prisma.moduleDefinition.findFirst({
     where: { slug: moduleSlug, isEnabled: true },
-    select: { id: true, slug: true, label: true, labelPlural: true, isCore: true },
+    // hasOwner comes along for the bulk reassign action: a module whose rows
+    // are not owned has nothing to reassign, and the storage shape below has
+    // the other half of that answer.
+    select: { id: true, slug: true, label: true, labelPlural: true, isCore: true, hasOwner: true },
   });
   if (!mod) notFound();
 
@@ -282,6 +285,47 @@ export default async function ModulePage({
     }
   }
 
+  /**
+   * Whether a record here CAN be reassigned at all — a storage property, not a
+   * slug. `hasOwner` is the module's declaration and `ownerColumn` is whether
+   * the table it lives in physically carries one; the record service refuses
+   * the move unless both hold, so the screen asks the same question rather
+   * than drawing a button that always answers 422.
+   */
+  const ownerColumn = storageFor(
+    { id: mod.id, slug: mod.slug, isCore: mod.isCore },
+    fields.map((f) => ({ key: f.key, type: f.type, systemColumn: f.systemColumn })),
+  ).shape.ownerColumn;
+  const hasOwner = mod.hasOwner && ownerColumn !== null;
+
+  /**
+   * Every user id the rows on THIS page mention, resolved to a name in one
+   * query — the same display lookup the record detail screen does, and for the
+   * same reason: an Owner column reading `9f3c…` is a column nobody can act
+   * on. Only id and fullName are read; this is not a read of the Profile
+   * module and grants no access to it.
+   *
+   * Keyed on the field TYPE, never on a column name, so every USER_LOOKUP
+   * column an Admin adds resolves without this page being touched.
+   */
+  const userKeys = columnFields.filter((f) => f.type === 'USER_LOOKUP').map((f) => f.key);
+  const userIds = new Set<string>();
+  for (const row of rows) {
+    for (const key of userKeys) {
+      const value = (row as Record<string, unknown>)[key];
+      if (typeof value === 'string' && value !== '') userIds.add(value);
+    }
+  }
+  const userNames: [string, string][] =
+    userIds.size === 0
+      ? []
+      : (
+          await prisma.user.findMany({
+            where: { id: { in: [...userIds] } },
+            select: { id: true, fullName: true },
+          })
+        ).map((u) => [u.id, u.fullName]);
+
   const columns: DataTableColumn[] = columnFields.map((f, i) => ({
     key: f.key,
     label: f.label,
@@ -334,6 +378,7 @@ export default async function ModulePage({
 
       <ListScreen
         slug={mod.slug}
+        label={mod.label}
         labelPlural={mod.labelPlural}
         filterFields={filterFields}
         relatedModules={relatedModules}
@@ -378,6 +423,8 @@ export default async function ModulePage({
         fieldBuilderHref={canConfigureFields ? `/settings/modules/${mod.slug}/fields` : null}
         emptyMessage={`Nothing here yet — ${mod.labelPlural} you create or import appear in this list.`}
         serverError={serverError}
+        hasOwner={hasOwner}
+        userNames={userNames}
       />
     </div>
   );
