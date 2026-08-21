@@ -10,6 +10,7 @@
   "dependencies": {
     "@crm/core": "*",
     "@crm/db": "*",
+    "@crm/records": "*",
     "@crm/shared": "*",
     "@prisma/client": "^6.2.0",
     "bullmq": "^5.34.0",

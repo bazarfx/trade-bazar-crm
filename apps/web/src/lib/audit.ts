@@ -1,56 +1,20 @@
 /**
- * Layer A — the append-only audit log, wired to Prisma.
+ * Layer A on the Next side.
  *
- * This log IS the timeline rendered on every record. Never UPDATE it, never
- * DELETE from it. Every mutation in the product goes through here.
+ * THE SPLIT: the sink — `audit`, `auditWithin` and the one `AuditEntry` → row
+ * mapping — moved to `@crm/records` so the worker writes the same rows the
+ * same way. An imported lead gets its RECORD_CREATED and ASSIGNED entries from
+ * the same logger a hand-typed one does, because the import goes THROUGH the
+ * engine rather than around it.
+ *
+ * `requestMeta` stayed because it is genuinely Next-bound: it reads headers
+ * off an HTTP `Request`, and a background job has none. Callers that have a
+ * request pass the result in as `AuditMeta`; the worker passes nothing, and
+ * the entry simply carries no ip or user agent.
  */
 import 'server-only';
-import { prisma } from '@crm/db';
-import { AuditLogger, type AuditEntry, type AuditSink } from '@crm/core';
-import { Prisma, type ActorType, type AuditAction } from '@crm/db';
 
-/** The client OR an open transaction — both write the same rows the same way. */
-type AuditClient = Pick<Prisma.TransactionClient, 'auditLog'>;
-
-/** One mapping from `AuditEntry` to the row, used by every writer. Duplicating
- *  it per call site is how the JSON-null handling below drifts. */
-function sinkOn(client: AuditClient): AuditSink {
-  return {
-    async write(entries: AuditEntry[]) {
-      if (entries.length === 0) return;
-      await client.auditLog.createMany({
-        data: entries.map((e) => ({
-          entityType: e.entityType,
-          entityId: e.entityId,
-          action: e.action as AuditAction,
-          actorType: e.actorType as ActorType,
-          actorId: e.actorId ?? null,
-          // Prisma distinguishes "JSON null" from "column null"; an entry with no
-          // diff (a login, a webhook receipt) stores column null.
-          changes: e.changes
-            ? (e.changes as unknown as Prisma.InputJsonObject)
-            : Prisma.DbNull,
-          ipAddress: e.ipAddress ?? null,
-          userAgent: e.userAgent ?? null,
-        })),
-      });
-    },
-  };
-}
-
-export const audit = new AuditLogger(sinkOn(prisma));
-
-/**
- * An `AuditLogger` bound to an OPEN TRANSACTION.
- *
- * The module-level `audit` writes on its own connection, so a mutation that
- * used it inside `$transaction` would commit its log rows even if the business
- * write rolled back — a timeline entry for something that never happened. Any
- * mutation that must be atomic with its log takes its logger from here.
- */
-export function auditWithin(tx: Prisma.TransactionClient): AuditLogger {
-  return new AuditLogger(sinkOn(tx));
-}
+export { audit, auditWithin } from '@crm/records';
 
 /** Client IP and user agent, for audit entries. */
 export function requestMeta(req: Request): { ipAddress: string | null; userAgent: string | null } {

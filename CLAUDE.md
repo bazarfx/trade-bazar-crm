@@ -178,12 +178,22 @@ Never log passwords, tokens, payment details, keystrokes or mouse movement.
 apps/web/      Next.js — UI + route handlers (thin adapters only)
 apps/worker/   BullMQ — ARK webhook, campaign intake, logs, imports
 packages/core/ ENGINES. Framework-agnostic. Zero Next imports.
+packages/records/ THE RECORD ENGINE — records, assignment, config writes,
+               audit sink. Runtime-agnostic: web AND worker both import it.
 packages/db/   Prisma schema + client + seed
 packages/shared/ Types + Zod validation, used by web AND worker
 tools/figma/   .fig decoder → tokens, component specs
 ```
 
 Background work never runs in a route handler. Engine logic never imports Next.
+
+**Nothing in `packages/` may import `server-only`.** That package throws
+outside a Next server bundle, so one line of it anywhere in the write path
+means the worker cannot create a record — and a worker that cannot create a
+record has to reimplement the write path, which is how the five invariants get
+broken quietly. The guard belongs on the Next side: `apps/web/src/lib/**`
+carries thin `server-only` shims that re-export the package, so nothing reaches
+a client bundle and the engine stays importable from a job.
 
 ---
 

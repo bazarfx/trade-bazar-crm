@@ -9,8 +9,11 @@ const config: NextConfig = {
   reactStrictMode: true,
   // A stray lockfile above the repo makes Next guess the wrong workspace root.
   outputFileTracingRoot: path.join(import.meta.dirname, '../..'),
-  transpilePackages: ['@crm/shared', '@crm/core', '@crm/db'],
-  serverExternalPackages: ['@prisma/client', 'bcryptjs'],
+  transpilePackages: ['@crm/shared', '@crm/core', '@crm/db', '@crm/records'],
+  // Node-only packages that must not go through the bundler: bullmq loads Lua
+  // scripts from disk at runtime, ioredis and exceljs both reach for node
+  // built-ins, and a bundled copy of any of them fails only once it is called.
+  serverExternalPackages: ['@prisma/client', 'bcryptjs', 'bullmq', 'ioredis', 'exceljs'],
   eslint: { ignoreDuringBuilds: true },
   experimental: {
     // engines and route handlers both import Prisma; keep it out of the bundle

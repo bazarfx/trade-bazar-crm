@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Button } from '@/components/ui';
 import { PendingOverlay } from './pending-overlay';
 import { RecordFormOverlay } from './record-form-overlay';
+import { ImportWizard } from './import/import-wizard';
 import { ExportIcon, ImportIcon, PlusIcon } from './icons';
 
 /**
@@ -11,14 +12,17 @@ import { ExportIcon, ImportIcon, PlusIcon } from './icons';
  * "Create Lead" is what `label` happens to hold today, and the same component
  * says "Create Invoice" the day an Admin adds that module without a deploy.
  *
- * Create opens the generated record form; export and import open a full-screen
- * stub rather than doing nothing, so the shape of the interaction (and its
- * `data-track` name) is already the real one.
+ * Create opens the generated record form and Import opens the five-stage
+ * wizard. Export still opens a full-screen stub rather than doing nothing, so
+ * the shape of the interaction (and its `data-track` name) is already the real
+ * one.
  */
 export interface ListActionsProps {
   slug: string;
   /** module.label — SINGULAR, the thing one of these records is. */
   label: string;
+  /** module.labelPlural — what a set of these records is called. */
+  labelPlural: string;
   /**
    * Field key → `FieldDefinition.systemColumn`, for the record form. It has to
    * come from the server: the fields API does not serialise the column, and
@@ -28,18 +32,28 @@ export interface ListActionsProps {
   systemColumns: Record<string, string | null>;
   canCreate: boolean;
   canImportExport: boolean;
+  /**
+   * Whether a record here can be owned at all — the module's own declaration
+   * AND the storage shape's owner column, resolved on the page. The import
+   * wizard's last stage asks who ends up owning the rows, and a module whose
+   * rows have no owner has nothing to ask.
+   */
+  hasOwner: boolean;
 }
 
-type PendingAction = 'export' | 'import';
+type PendingAction = 'export';
 
 export function ListActions({
   slug,
   label,
+  labelPlural,
   systemColumns,
   canCreate,
   canImportExport,
+  hasOwner,
 }: ListActionsProps) {
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [pending, setPending] = useState<PendingAction | null>(null);
 
   const COPY: Record<PendingAction, { title: string; message: string }> = {
@@ -48,12 +62,6 @@ export function ListActions({
       message:
         'Export runs as a background job and mails a link when the file is ready — a synchronous ' +
         'download cannot survive a large module. It arrives with the import/export slice.',
-    },
-    import: {
-      title: `Import ${label} records`,
-      message:
-        'Import is column mapping, a dry-run preview and a duplicate review queue, all driven by ' +
-        "this module's fields. It arrives with the import/export slice.",
     },
   };
 
@@ -90,7 +98,11 @@ export function ListActions({
           iconLeft={<ImportIcon className="h-4 w-4" />}
           disabled={!canImportExport}
           title={canImportExport ? undefined : 'Your role does not hold the Import / Export permission.'}
-          onClick={() => setPending('import')}
+          onClick={() => setImporting(true)}
+          // Keeps the `module.screen.element.action` shape: the button belongs
+          // to the LIST screen, and the wizard's own controls are named
+          // `${slug}.import.*`. Renaming this one would break the continuity of
+          // an interaction log that already holds it.
           data-track={`${slug}.list.import.open`}
         >
           Import
@@ -103,6 +115,16 @@ export function ListActions({
           label={label}
           systemColumns={systemColumns}
           onClose={() => setCreating(false)}
+        />
+      ) : null}
+
+      {importing ? (
+        <ImportWizard
+          slug={slug}
+          labelPlural={labelPlural}
+          systemColumns={systemColumns}
+          hasOwner={hasOwner}
+          onClose={() => setImporting(false)}
         />
       ) : null}
 

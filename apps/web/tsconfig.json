@@ -15,7 +15,9 @@
       "@crm/shared/*": ["../../packages/shared/src/*"],
       "@crm/core": ["../../packages/core/src/index.ts"],
       "@crm/core/*": ["../../packages/core/src/*"],
-      "@crm/db": ["../../packages/db/src/index.ts"]
+      "@crm/db": ["../../packages/db/src/index.ts"],
+      "@crm/records": ["../../packages/records/src/index.ts"],
+      "@crm/records/*": ["../../packages/records/src/*"]
     }
   },
   "include": ["next-env.d.ts", "src/**/*.ts", "src/**/*.tsx", ".next/types/**/*.ts"],

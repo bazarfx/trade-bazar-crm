@@ -747,27 +747,83 @@ model AssignmentState {
 }
 
 model ImportBatch {
-  id          String   @id @default(uuid())
+  id          String    @id @default(uuid())
   userId      String
   moduleId    String
   filename    String
+  /// Stage 1 of the wizard offers a Charset selector. The bytes are decoded
+  /// ONCE, at parse time, and the choice is recorded so a re-parse of the same
+  /// upload produces the same rows — a Windows-1252 export re-read as UTF-8
+  /// mangles every accented name silently.
+  charset     String    @default("utf-8")
+  /// The source file's header row, in file order. Stage 4 (Fileld Mapping)
+  /// maps these to field keys; keeping them lets the wizard be resumed, and
+  /// lets an error report name the column a human sees in their spreadsheet.
+  headers     Json?
   /// column → field mapping, reusable as a preset
   mapping     Json
   /// ADD_NEW | UPDATE_ONLY | BOTH
   action      String
-  /// LEAD_ID | EMAIL | PHONE | MOBILE | NONE
+  /// The FieldDefinition key an incoming row is matched on, or the literal
+  /// "NONE". A field key rather than a fixed list of column names: any field
+  /// the Admin marks unique is a legitimate match key, including one created
+  /// after launch. See IMPORT_DEDUPE_NONE in packages/shared/src/imports.ts.
   dedupeKey   String
-  total       Int      @default(0)
-  succeeded   Int      @default(0)
-  failed      Int      @default(0)
-  status      String   @default("PENDING")
+  total       Int       @default(0)
+  succeeded   Int       @default(0)
+  failed      Int       @default(0)
+  status      String    @default("PENDING")
   errorReport Json?
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
+  /// When the worker picked the batch up, and when it put it down. A null
+  /// `startedAt` on an old batch is a job that never reached a consumer; a set
+  /// `startedAt` with a null `finishedAt` is one that died mid-run — which is
+  /// exactly the case ImportRow makes resumable rather than fatal.
+  startedAt   DateTime?
+  finishedAt  DateTime?
 
   user   User             @relation(fields: [userId], references: [id])
   module ModuleDefinition @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  rows   ImportRow[]
 
   @@index([userId, createdAt])
+}
+
+/// One staged source row, parsed but not yet imported.
+///
+/// WHY STAGE AT ALL, rather than stream the file straight through the engine.
+/// Three things become possible only once every row is a row in a table:
+///
+///   - **Per-row error reporting.** A failure carries its `rowNumber` and the
+///     `raw` values the user typed, so the report reads "row 412: Language
+///     'Hinid' is not an option" instead of "412 records failed".
+///   - **Resumability.** Row processing runs in the worker (CLAUDE.md: never
+///     in a route handler), and a worker can be restarted mid-batch. Each row
+///     moves PENDING → IMPORTED / SKIPPED / FAILED independently, so a restart
+///     picks up only what is still PENDING and cannot double-create the rest.
+///   - **Honest counts.** `ImportBatch.succeeded` / `failed` are derived from
+///     these rows rather than incremented by hand, so a crashed run's totals
+///     still add up.
+///
+/// `raw` is the source row BEFORE mapping — the file as it was, keyed by
+/// header. The mapping in `ImportBatch.mapping` is applied per row at import
+/// time, so re-running a batch with a corrected mapping needs no re-upload.
+model ImportRow {
+  id        String  @id @default(uuid())
+  batchId   String
+  rowNumber Int
+  /// the source row as parsed, before mapping
+  raw       Json
+  /// PENDING | IMPORTED | SKIPPED | FAILED
+  status    String  @default("PENDING")
+  error     String?
+  /// what it created, when it succeeded
+  recordId  String?
+
+  batch ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, rowNumber])
+  @@index([batchId, status])
 }
 
 // ═══════════════════════════════════════════════════════════════════

@@ -363,6 +363,7 @@ export default async function ModulePage({
         <ListActions
           slug={mod.slug}
           label={mod.label}
+          labelPlural={mod.labelPlural}
           // The record form has to know which field IS the status and which IS
           // the owner — the status picker is fed from the `Status` table and
           // both are filled server-side on create — and `FieldDto` does not
@@ -371,6 +372,10 @@ export default async function ModulePage({
           systemColumns={Object.fromEntries(fields.map((f) => [f.key, f.systemColumn]))}
           canCreate={engine.can('create', mod.slug)}
           canImportExport={engine.hasSpecial('IMPORT_EXPORT')}
+          // The import wizard's last stage asks who owns the imported rows.
+          // Whether that question exists at all is a storage property, not a
+          // slug — the same answer the bulk reassign action reads.
+          hasOwner={hasOwner}
         />
       </div>
 

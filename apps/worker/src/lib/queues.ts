@@ -1,4 +1,5 @@
 import { Queue, type JobsOptions } from 'bullmq';
+import { IMPORT_QUEUE } from '@crm/shared';
 import { connection } from './redis.js';
 
 /**
@@ -16,8 +17,10 @@ export const QUEUE = {
   ARK_WEBHOOK: 'ark-webhook',
   /** Campaign leads arriving via Integrately. */
   CAMPAIGN_INTAKE: 'campaign-intake',
-  /** CSV / XLSX import batches. */
-  IMPORTS: 'imports',
+  /** CSV / XLSX import batches. The name comes from `@crm/shared` because the
+   *  enqueuer is in the WEB app: a queue name is a Redis key, and a literal
+   *  typed into both apps produces jobs that are accepted and never drained. */
+  IMPORTS: IMPORT_QUEUE,
   /** Housekeeping: expired token sweep, index builds. */
   MAINTENANCE: 'maintenance',
 } as const;

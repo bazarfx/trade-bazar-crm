@@ -13,12 +13,18 @@ import { prisma } from '@crm/db';
 import { connection } from './lib/redis.js';
 import { closeQueues } from './lib/queues.js';
 import { startMaintenanceWorker, scheduleMaintenance } from './jobs/maintenance.js';
+import { startImportsWorker } from './jobs/imports.js';
 
 const workers: Worker[] = [];
 
 async function main() {
   workers.push(startMaintenanceWorker());
   await scheduleMaintenance();
+
+  // The import consumer. Enqueued by the wizard's commit in apps/web; this is
+  // the half that actually writes records, one staged row at a time through
+  // the record engine.
+  workers.push(startImportsWorker());
 
   console.log(`▸ worker up — ${workers.length} consumer(s): ${workers.map((w) => w.name).join(', ')}`);
 }
