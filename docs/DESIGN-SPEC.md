@@ -68,22 +68,48 @@ Sidebar padding is 24. Nav link padding is 10/12. Button padding is 8/12
 
 The reference frame. Canvas `#f6f8fa`.
 
+### Top bar — 1184×68, over the content column
+`Rectangle 2` in the frame: `x 256, y 0`, 1184×68, `bg #ffffff`, 1px bottom
+border `#e5e7eb`. The **user profile lives here**, right-aligned with a 16px
+margin (the group sits at x=1216 of 1440): avatar 44 (circle) +
+column(role overline 10px `#757575`, name 14px Medium), gap 12. Page content
+starts below this bar.
+
+> An earlier revision of this section placed the profile inside the sidebar
+> and described no top bar — that came from the sidebar component template,
+> not the real screen. The values above are measured off the `CRM _ Leads`
+> frame itself. When the template and a screen disagree, the screen wins.
+
 ### Sidebar — 256 wide, full height
 `bg #ffffff`, `flex-col`, `gap 24`, `padding 24`, radius 12 when floating.
-Inner content width 208.
+Inner content width 208. Top to bottom, per the frame:
 
 - Collapse button 28×28, radius 8, 6px padding, bordered `#f6f6f6`
-- Profile row 208×44: avatar 44 (circle) + column(role overline 10px `#757575`,
-  name 14px Medium `#000000`), gap 12
-- Divider 208×2, `#f6f6f6`, radius 2
-- Nav groups separated by dividers. Group order and labels:
-  1. **Main** — CRM, Contacts, Calls, Deals, Leads, Dashboard
-  2. **Settings** — Settings, Help
-  3. Logout Account
+- **Logo slot**: the file draws placeholder text "Logo Here", 14px Medium,
+  heading colour. No logo asset exists, so the build renders the product name
+  with the same typography. (The profile is NOT here — see the top bar.)
+- Divider 208×1, `#f6f6f6`
+- Group **Main** — a Dashboard link, then the **CRM dropdown**:
+  - Parent row 208×40, radius 8: grid icon + "CRM" + trailing chevron that
+    rotates while open. When any module route is current the PARENT wears
+    `bg #f6f8fa` with a heading-colour label.
+  - Sub-links 172×32, radius 8, 12px Medium, indented 36 from the group edge
+    with a 2px vertical guide line (`#f6f6f6`) running down the left of the
+    sub-list. Active sub-link `bg #f6f6f6` + heading label; resting `#757575`.
+  - The sub-links ARE the module list. The file shows Zoho's set (Leads,
+    Deals, Contacts, Calls); ours is `ModuleDefinition` rows ordered by
+    `navOrder`, never a hardcoded list.
+- Divider, then group **Settings** — the same dropdown anatomy, sub-links
+  being the real settings pages.
+- Bottom-pinned group (at y=912 in the frame): **Help**, then
+  **Logout Account** with icon AND label in `#ef4444`.
 - Nav link 208×40, `flex-row`, `gap 12`, `padding 10/12`, radius 8.
   Icon 20, label 14px Medium, `letter-spacing -2`.
   Resting label `#757575`; current item label `#000000` with `bg #f6f6f6`.
 - Group heading ("Main") is a 10px Medium overline, `#757575`, padding 0/12.
+- Only the expanded state is drawn. The collapsed 72px rail follows the Menu
+  Item component's 40×40 icon-only variants; dropdowns flatten into their
+  sub-items as icon buttons.
 
 ### Header
 - Page title 24px Medium, `#111827`

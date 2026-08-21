@@ -30,6 +30,10 @@ const TABLE_FOR: Partial<Record<ConfigType, string>> = {
   STATUS: 'status',
   PICKLIST_OPTION: 'picklistOption',
   LAYOUT: 'layout',
+  // Snapshots carry name, isActive, fieldMapping and defaultValues only (never
+  // the token hash or the last payload), so undoing a mapping edit writes
+  // exactly those back; undoing a CREATE pauses the source via `isActive`.
+  WEBHOOK_SOURCE: 'webhookSource',
 };
 
 export interface RevertOptions {

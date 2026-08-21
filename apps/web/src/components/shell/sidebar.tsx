@@ -1,78 +1,64 @@
 'use client';
 
-import { Fragment, useCallback, useEffect, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/components/ui/button';
 import { Icon } from './icons';
-import { NavAction, NavLink } from './nav-item';
+import { NavAction, NavDisabled, NavLink, NavParent, NavSubLink } from './nav-item';
 import { useSignOut } from '@/components/sign-out-button';
 
 /**
- * The app shell's sidebar, measured off the "Sidebar - Open" frame inside
- * `CRM _ Leads` (256×1024): flex-col, gap 24, padding 24, inner width 208,
- * groups separated by 208×2 dividers.
+ * The app shell's sidebar, measured off the real `CRM _ Leads` screen frame
+ * (not the component template): 256×1024, surface fill, right border,
+ * flex-col, gap 24, padding 24, inner width 208. Top to bottom: collapse
+ * handle, LOGO SLOT (the file draws the text "Logo Here" — the profile lives
+ * in the TOP BAR, not here), divider, group "Main" (Dashboard + the CRM
+ * dropdown), divider, group "Settings", and a bottom-pinned group (Help +
+ * the red "Logout Account") that the file places at y=912.
  *
- * It renders GROUPS OF ITEMS and knows nothing else. Which modules exist, what
- * they are called and which glyph they carry are all `ModuleDefinition` rows
- * resolved by the server layout — this component would render an Admin's
- * brand-new module tomorrow without a line changing, which is the point.
+ * The CRM dropdown's sub-links are whatever `ModuleDefinition` says is
+ * enabled, in `navOrder` — the file shows Zoho's set (Leads, Deals, Contacts,
+ * Calls) and ours comes from data, never a hardcoded list. An Admin adding a
+ * module tomorrow appears here without a deploy, which is the point.
  */
-export interface ShellNavItem {
-  /**
-   * Names the item's `data-track` (`<trackKey>.nav.item.open`). It is the
-   * module slug for a module, never a label — a rename must not orphan the
-   * interaction log.
-   */
-  trackKey: string;
-  href: string;
-  /** Pathname prefix that marks this item current. */
-  match: string;
+export interface ShellModule {
+  /** Module slug — names the `data-track` (`<slug>.nav.item.open`) and href. */
+  slug: string;
   label: string;
   /** `ModuleDefinition.icon`; unknown or null resolves to the fallback glyph. */
   icon: string | null;
 }
 
-export interface ShellNavGroup {
-  id: string;
-  /** The 10px overline above the group. null draws no heading. */
-  heading: string | null;
-  items: ShellNavItem[];
-}
-
-export interface ShellUser {
-  fullName: string;
-  roleName: string;
+export interface ShellSettingsPage {
+  /** Names the `data-track` (`settings.nav.<key>.open`), never the label. */
+  key: string;
+  href: string;
+  label: string;
+  /** Glyph for the collapsed icon-only rail, where labels do not render. */
+  icon: string;
 }
 
 /**
- * Survives a reload so the choice feels like a setting rather than a gesture
- * that has to be repeated every navigation.
+ * All three survive a reload so the choices feel like settings rather than
+ * gestures that have to be repeated every navigation. The dropdowns default
+ * OPEN — absent key reads as open, so only an explicit close is remembered.
  */
 const COLLAPSED_KEY = 'crm.shell.sidebar.collapsed';
+const CRM_OPEN_KEY = 'crm.shell.nav.crm.open';
+const SETTINGS_OPEN_KEY = 'crm.shell.nav.settings.open';
 
-/**
- * No avatar image column exists on `User` yet, so the circle carries initials.
- * Returns '?' for a blank name rather than an empty circle.
- */
-function initialsOf(fullName: string): string {
-  const parts = fullName.trim().split(/\s+/).filter(Boolean);
-  const first = parts[0]?.charAt(0) ?? '';
-  const last = parts.length > 1 ? (parts[parts.length - 1]?.charAt(0) ?? '') : '';
-  const initials = (first + last).toUpperCase();
-  return initials === '' ? '?' : initials;
-}
-
-/** Line 1 / Line 2 in the frame: 208×2, radius 2. */
+/** The 208×1 subtle divider between sidebar groups. */
 function Divider(): ReactElement {
-  return <div aria-hidden="true" className="h-0.5 shrink-0 rounded-sm bg-subtle" />;
+  return <div aria-hidden="true" className="h-px shrink-0 bg-subtle" />;
 }
 
 export function Sidebar({
-  groups,
-  user,
+  modules,
+  settingsPages,
 }: {
-  groups: ShellNavGroup[];
-  user: ShellUser;
+  modules: ShellModule[];
+  /** Empty when the actor fails the config-capability gate: no group at all. */
+  settingsPages: ShellSettingsPage[];
 }): ReactElement {
   const pathname = usePathname();
 
@@ -80,23 +66,52 @@ export function Sidebar({
   // seeding state from it would make the first client render disagree with the
   // server HTML and React would throw the tree away instead of hydrating it.
   const [collapsed, setCollapsed] = useState(false);
+  const [crmOpen, setCrmOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(true);
   useEffect(() => {
     setCollapsed(window.localStorage.getItem(COLLAPSED_KEY) === 'true');
+    setCrmOpen(window.localStorage.getItem(CRM_OPEN_KEY) !== 'false');
+    setSettingsOpen(window.localStorage.getItem(SETTINGS_OPEN_KEY) !== 'false');
   }, []);
 
   // Persisted outside the updater on purpose: a state updater must stay pure,
   // and React calls it twice in development to prove that it is.
-  const toggle = useCallback(() => {
+  const toggleCollapsed = useCallback(() => {
     const next = !collapsed;
     setCollapsed(next);
     window.localStorage.setItem(COLLAPSED_KEY, String(next));
   }, [collapsed]);
+
+  const toggleCrm = useCallback(() => {
+    const next = !crmOpen;
+    setCrmOpen(next);
+    window.localStorage.setItem(CRM_OPEN_KEY, String(next));
+  }, [crmOpen]);
+
+  const toggleSettings = useCallback(() => {
+    const next = !settingsOpen;
+    setSettingsOpen(next);
+    window.localStorage.setItem(SETTINGS_OPEN_KEY, String(next));
+  }, [settingsOpen]);
 
   const { signOut, busy } = useSignOut();
 
   // `/leads` is current on `/leads/abc` but not on `/leads-archive`; a bare
   // startsWith would light up the wrong row for any slug sharing a prefix.
   const isCurrent = (match: string) => pathname === match || pathname.startsWith(`${match}/`);
+
+  const crmActive = modules.some((m) => isCurrent(`/${m.slug}`));
+  const settingsActive = isCurrent('/settings');
+
+  /**
+   * The file only draws the EXPANDED sidebar; the 72px collapsed rail follows
+   * the Menu Item component's 40×40 icon-only variants instead. A dropdown
+   * has no icon-only shape, so the rail FLATTENS each one into its sub-items:
+   * every module (and settings page) becomes a 40×40 icon button — still a
+   * real link, still focusable, so nothing becomes keyboard-unreachable when
+   * the labels go away. `title`/`aria-label` carry the hidden label.
+   */
+  const flattened = collapsed;
 
   return (
     <aside
@@ -111,7 +126,7 @@ export function Sidebar({
       <div className={cn('flex shrink-0', collapsed ? 'justify-center' : 'justify-end')}>
         <button
           type="button"
-          onClick={toggle}
+          onClick={toggleCollapsed}
           aria-expanded={!collapsed}
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
@@ -128,62 +143,143 @@ export function Sidebar({
         </button>
       </div>
 
-      {/* Profile: avatar 44 + column(role overline, name), gap 12. */}
-      <div className={cn('flex shrink-0 items-center gap-3', collapsed && 'justify-center')}>
-        <span
-          aria-hidden="true"
-          className={cn(
-            'flex shrink-0 items-center justify-center rounded-pill bg-subtle font-medium text-heading',
-            collapsed ? 'h-10 w-10 text-xs' : 'h-11 w-11 text-sm',
-          )}
-        >
-          {initialsOf(user.fullName)}
-        </span>
-        {collapsed ? null : (
-          <span className="flex min-w-0 flex-col gap-1">
-            <span className="truncate text-overline text-muted" title={user.roleName}>
-              {user.roleName}
-            </span>
-            <span className="truncate text-sm font-medium text-heading" title={user.fullName}>
-              {user.fullName}
-            </span>
-          </span>
-        )}
-      </div>
+      {/* LOGO SLOT. The file draws placeholder text ("Logo Here", 14px Medium,
+          heading colour); no logo asset exists, so the product name wears the
+          same typography. Collapses to nothing — a truncated wordmark in a
+          72px rail would read as a bug, not a brand. */}
+      {collapsed ? null : (
+        <p className="shrink-0 truncate text-sm font-medium text-heading" title="Trade Bazar CRM">
+          Trade Bazar CRM
+        </p>
+      )}
 
       {/* Scrolls on its own: an Admin may enable more modules than fit 1024. */}
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto">
-        {/* The frame carries exactly two dividers — after the profile and
-            between the two headed groups. The trailing group is bottom-pinned
-            instead, which is what the 488-tall spacer group in the file does. */}
         <Divider />
 
-        {groups.map((group, index) => (
-          <Fragment key={group.id}>
-            {index > 0 ? <Divider /> : null}
+        <nav aria-label="Main" className={cn('flex flex-col gap-2', collapsed && 'items-center')}>
+          {!collapsed && <p className="px-3 text-overline text-muted">Main</p>}
+
+          {/* Dashboard is phase 1.5 (spec §16): a visible, honest placeholder
+              rather than a dead link or an absent row. */}
+          <NavDisabled
+            reason="Dashboard arrives in a later phase"
+            icon="home"
+            label="Dashboard"
+            collapsed={collapsed}
+            data-track="shell.nav.dashboard.open"
+          />
+
+          {flattened ? (
+            modules.map((m) => (
+              <NavLink
+                key={m.slug}
+                href={`/${m.slug}`}
+                active={isCurrent(`/${m.slug}`)}
+                icon={m.icon}
+                label={m.label}
+                collapsed
+                data-track={`${m.slug}.nav.item.open`}
+              />
+            ))
+          ) : (
+            <>
+              <NavParent
+                icon="grid"
+                label="CRM"
+                open={crmOpen}
+                active={crmActive}
+                onToggle={toggleCrm}
+                controlsId="shell-subnav-crm"
+                data-track="shell.nav.crm.toggle"
+              />
+              {crmOpen ? (
+                // ml 20 + pl 16 = the file's 36px indent, leaving each
+                // sub-link its measured 172×32. The 2px guide line belongs to
+                // the container so it runs unbroken past the row gaps.
+                <div id="shell-subnav-crm" className="relative ml-5 flex flex-col gap-1 pl-4">
+                  <span aria-hidden="true" className="absolute inset-y-0 left-0 w-0.5 rounded-sm bg-subtle" />
+                  {modules.map((m) => (
+                    <NavSubLink
+                      key={m.slug}
+                      href={`/${m.slug}`}
+                      active={isCurrent(`/${m.slug}`)}
+                      label={m.label}
+                      data-track={`${m.slug}.nav.item.open`}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </>
+          )}
+        </nav>
+
+        {settingsPages.length > 0 ? (
+          <>
+            <Divider />
             <nav
-              aria-label={group.heading ?? undefined}
+              aria-label="Settings"
               className={cn('flex flex-col gap-2', collapsed && 'items-center')}
             >
-              {group.heading !== null && !collapsed ? (
-                <p className="px-3 text-overline text-muted">{group.heading}</p>
-              ) : null}
-              {group.items.map((item) => (
-                <NavLink
-                  key={item.trackKey}
-                  href={item.href}
-                  active={isCurrent(item.match)}
-                  icon={item.icon}
-                  label={item.label}
-                  collapsed={collapsed}
-                  data-track={`${item.trackKey}.nav.item.open`}
-                />
-              ))}
-            </nav>
-          </Fragment>
-        ))}
+              {!collapsed && <p className="px-3 text-overline text-muted">Settings</p>}
 
-        <nav className={cn('mt-auto flex flex-col gap-2 pt-6', collapsed && 'items-center')}>
+              {flattened ? (
+                settingsPages.map((page) => (
+                  <NavLink
+                    key={page.key}
+                    href={page.href}
+                    active={isCurrent(page.href)}
+                    icon={page.icon}
+                    label={page.label}
+                    collapsed
+                    data-track={`settings.nav.${page.key}.open`}
+                  />
+                ))
+              ) : (
+                <>
+                  <NavParent
+                    icon="settings"
+                    label="Settings"
+                    open={settingsOpen}
+                    active={settingsActive}
+                    onToggle={toggleSettings}
+                    controlsId="shell-subnav-settings"
+                    data-track="shell.nav.settings.toggle"
+                  />
+                  {settingsOpen ? (
+                    <div id="shell-subnav-settings" className="relative ml-5 flex flex-col gap-1 pl-4">
+                      <span aria-hidden="true" className="absolute inset-y-0 left-0 w-0.5 rounded-sm bg-subtle" />
+                      {settingsPages.map((page) => (
+                        <NavSubLink
+                          key={page.key}
+                          href={page.href}
+                          active={isCurrent(page.href)}
+                          label={page.label}
+                          data-track={`settings.nav.${page.key}.open`}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </nav>
+          </>
+        ) : null}
+
+        {/* Bottom group, pinned to the sidebar foot — the file puts it at
+            y=912 of 1024. Help is a placeholder like Dashboard; Logout draws
+            icon AND label in the error colour, exactly as the frame does. */}
+        <nav
+          aria-label="Session"
+          className={cn('mt-auto flex flex-col gap-2 pt-6', collapsed && 'items-center')}
+        >
+          <NavDisabled
+            reason="Help arrives later"
+            icon="help-circle"
+            label="Help"
+            collapsed={collapsed}
+            data-track="shell.nav.help.open"
+          />
           <NavAction
             onClick={signOut}
             disabled={busy}

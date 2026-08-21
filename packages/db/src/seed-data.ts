@@ -74,6 +74,13 @@ type Field = {
   /** A bare string is a value that reads well as its own label; the pair form is
    *  for options whose stored value is a machine token (an enum member). */
   options?: readonly (string | { value: string; label: string })[];
+  /** RECORD_LINK target, as a MODULE SLUG the seed resolves to an id.
+   *  `FieldDefinition.relatedModuleId` is how the engine (and campaign
+   *  intake's link discovery) knows what a link field points at. */
+  relatedModule?: string;
+  /** `FieldDefinition.defaultValue` — applied by the record engine when a
+   *  create omits the key. */
+  defaultValue?: unknown;
 };
 
 export const LEAD_SECTIONS = ['Lead Information', 'Personal Information', 'ARK Information'] as const;
@@ -94,7 +101,7 @@ export const LEAD_FIELDS: Field[] = [
   { key: 'statusId',     label: 'Lead Status',    type: 'DROPDOWN',        systemColumn: 'statusId',     isSystem: true, isRequired: true, section: 'Lead Information' },
   { key: 'ownerId',      label: 'Lead Owner',     type: 'USER_LOOKUP',     systemColumn: 'ownerId',      isSystem: true, isRequired: true, section: 'Lead Information' },
   { key: 'groupId',      label: 'Group',          type: 'RECORD_LINK',     systemColumn: 'groupId',      section: 'Lead Information' },
-  { key: 'campaignId',   label: 'Campaign',       type: 'RECORD_LINK',     systemColumn: 'campaignId',   section: 'Lead Information' },
+  { key: 'campaignId',   label: 'Campaign',       type: 'RECORD_LINK',     systemColumn: 'campaignId',   section: 'Lead Information', relatedModule: 'campaigns' },
   { key: 'referralCode', label: 'Referral Code',  type: 'SINGLE_LINE',     systemColumn: 'referralCode', section: 'Lead Information' },
   { key: 'salutation',   label: 'Salutation',     type: 'DROPDOWN',        section: 'Lead Information', options: PICKLISTS.salutation },
   { key: 'location',     label: 'Location',       type: 'SINGLE_LINE',     section: 'Lead Information' },
@@ -139,7 +146,7 @@ export const USER_FIELDS: Field[] = [
 ];
 
 export const DEAL_FIELDS: Field[] = [
-  { key: 'leadId',         label: 'Linked Lead',        type: 'RECORD_LINK', systemColumn: 'leadId',         isSystem: true, isRequired: true, section: 'Deal Information' },
+  { key: 'leadId',         label: 'Linked Lead',        type: 'RECORD_LINK', systemColumn: 'leadId',         isSystem: true, isRequired: true, section: 'Deal Information', relatedModule: 'leads' },
   { key: 'arkAccountNo',   label: 'ARK Account Number', type: 'SINGLE_LINE', systemColumn: 'arkAccountNo',   isSystem: true, isRequired: true, isIndexed: true, section: 'Deal Information' },
   { key: 'closedById',     label: 'Closed By',          type: 'USER_LOOKUP', systemColumn: 'closedById',     isSystem: true, isRequired: true, section: 'Deal Information' },
   { key: 'ownerId',        label: 'Deal Owner',         type: 'USER_LOOKUP', systemColumn: 'ownerId',        isSystem: true, isRequired: true, section: 'Deal Information' },
@@ -149,8 +156,27 @@ export const DEAL_FIELDS: Field[] = [
   { key: 'ftdDate',        label: 'FTD Date',           type: 'DATE_TIME',   systemColumn: 'ftdDate',        section: 'Deal Information' },
   { key: 'totalDeposited', label: 'Total Deposited',    type: 'CURRENCY',    systemColumn: 'totalDeposited', isSystem: true, section: 'Deal Information' },
   { key: 'depositCount',   label: 'Deposit Count',      type: 'NUMBER',      systemColumn: 'depositCount',   isSystem: true, section: 'Deal Information' },
-  { key: 'campaignId',     label: 'Campaign of Origin', type: 'RECORD_LINK', systemColumn: 'campaignId',     section: 'Deal Information' },
+  { key: 'campaignId',     label: 'Campaign of Origin', type: 'RECORD_LINK', systemColumn: 'campaignId',     section: 'Deal Information', relatedModule: 'campaigns' },
   { key: 'notes',          label: 'Notes',              type: 'MULTI_LINE',  section: 'Deal Information' },
+];
+
+/**
+ * Campaign records (spec §9): name, platform, details, tracking parameters.
+ *
+ * Seeded so campaign intake can find-or-create a Campaign THROUGH the record
+ * engine the moment a payload names one — a module with no fields has no
+ * write contract, and the engine (rightly) cannot insert into it.
+ *
+ * `platform` is NOT NULL in the Campaign table, so it carries a defaultValue:
+ * intake only ever learns a campaign NAME from a payload (the Integrately
+ * shape is still unknown), and "Unknown" is seed DATA the Admin can edit —
+ * both the default and the record — rather than a guess baked into code.
+ */
+export const CAMPAIGN_FIELDS: Field[] = [
+  { key: 'name',     label: 'Campaign Name', type: 'SINGLE_LINE', systemColumn: 'name',     isSystem: true, isRequired: true, section: 'Campaign Information' },
+  { key: 'platform', label: 'Platform',      type: 'SINGLE_LINE', systemColumn: 'platform', isSystem: true, isRequired: true, section: 'Campaign Information', defaultValue: 'Unknown' },
+  { key: 'details',  label: 'Details',       type: 'MULTI_LINE',  systemColumn: 'details',  section: 'Campaign Information' },
+  { key: 'spend',    label: 'Spend',         type: 'CURRENCY',    systemColumn: 'spend',    section: 'Campaign Information' },
 ];
 
 export const MODULES = [

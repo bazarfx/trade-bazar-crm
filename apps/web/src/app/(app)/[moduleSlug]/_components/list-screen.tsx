@@ -28,6 +28,7 @@ import {
 import { ListToolbar } from './list-toolbar';
 import { Pagination } from './pagination';
 import { RecordTable, type TableRow } from './record-table';
+import { ReviewQueueOverlay } from './review-queue-overlay';
 import { SaveViewOverlay } from './save-view-overlay';
 
 /**
@@ -94,6 +95,12 @@ export interface ListScreenProps {
    * paints a UUID and then swaps it for a name.
    */
   userNames: [string, string][];
+  /**
+   * PENDING duplicate flags for this module (spec §6.6), counted server-side.
+   * The page sends 0 when this module's storage cannot carry flags or this
+   * actor may not resolve them, so 0 is also "no button".
+   */
+  duplicateCount: number;
 }
 
 interface AppliedFilter {
@@ -124,6 +131,7 @@ export function ListScreen({
   serverError,
   hasOwner,
   userNames,
+  duplicateCount,
 }: ListScreenProps) {
   const router = useRouter();
 
@@ -137,6 +145,18 @@ export function ListScreen({
 
   /** Ticked row ids. Page-scoped — see the effect that clears it. */
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+
+  /**
+   * The review queue count, held locally so each resolved pair pulls the
+   * toolbar number down immediately — the server prop only refreshes on
+   * navigation, and a button still reading (3) after the third resolution
+   * would claim work that no longer exists.
+   */
+  const [pendingDuplicates, setPendingDuplicates] = useState(duplicateCount);
+  useEffect(() => {
+    setPendingDuplicates(duplicateCount);
+  }, [duplicateCount]);
+  const [reviewing, setReviewing] = useState(false);
   const [reassigning, setReassigning] = useState(false);
   const [bulkNotice, setBulkNotice] = useState<string | null>(null);
   /**
@@ -517,6 +537,8 @@ export function ListScreen({
             pageSize={query.size}
             pageSizes={pageSizes}
             onChangePageSize={(size) => go({ size, page: 1 })}
+            duplicateCount={pendingDuplicates}
+            onOpenReview={() => setReviewing(true)}
           />
 
           {problem !== null ? (
@@ -631,6 +653,23 @@ export function ListScreen({
           recordIds={selectedIds}
           onDone={onReassigned}
           onClose={() => setReassigning(false)}
+        />
+      ) : null}
+
+      {reviewing ? (
+        <ReviewQueueOverlay
+          slug={slug}
+          label={label}
+          labelPlural={labelPlural}
+          statuses={statuses}
+          onResolved={() => setPendingDuplicates((n) => Math.max(0, n - 1))}
+          onClose={() => {
+            setReviewing(false);
+            // A resolution may have changed what the list shows — a merged
+            // pair's keeper was often just edited in another tab — and the
+            // server-owned path re-reads only on refresh.
+            router.refresh();
+          }}
         />
       ) : null}
 

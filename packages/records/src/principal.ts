@@ -18,7 +18,11 @@
  */
 import { prisma } from '@crm/db';
 import type { ActorContext, SpecialPermission, ViewScope } from '@crm/shared';
-import type { ModulePermission, PermissionSet } from '@crm/core';
+import type { ActorType, ModulePermission, PermissionSet } from '@crm/core';
+
+/** The audit identities that are not a person. `USER` is excluded because a
+ *  human principal is built by `loadPrincipal` from a real row, never forged. */
+export type SystemActorType = Exclude<ActorType, 'USER'>;
 
 export interface Principal {
   actor: ActorContext;
@@ -31,6 +35,13 @@ export interface Principal {
     departmentName: string | null;
     languages: string[];
   };
+  /**
+   * Set ONLY by `systemPrincipal()`. When present, every audit row the record
+   * engine writes carries this actorType with a NULL actorId, and nothing is
+   * stamped `createdBy` — there is no human in the loop and the log must not
+   * invent one. Absent on every principal built from a session or a user id.
+   */
+  system?: SystemActorType;
 }
 
 /** `{ hidden: [fieldId], readonly: [fieldId] }` as stored on RolePermission. */
@@ -129,5 +140,49 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
       departmentName: user.department?.name ?? null,
       languages: user.languages,
     },
+  };
+}
+
+/**
+ * A Principal for a pipeline with NO human in the loop — campaign intake, the
+ * ARK webhook. It exists so those pipelines can call `createRecord` and get
+ * everything a create means here (generated-schema validation, the assignment
+ * engine, the audit rows, the duplicate scan) instead of growing a second
+ * write path around the engine.
+ *
+ * WHY ADMIN-EQUIVALENT SCOPE. A system pipeline acts for the PLATFORM, not
+ * for a person: the duplicate scan must see every record, and the assignment
+ * engine must be free to hand the result to anyone. `isAdmin: true` is the
+ * engine's one "no restriction" answer and is honest here — an intake lead
+ * that could not be created for permission reasons would be a lost lead,
+ * which invariant 1 forbids.
+ *
+ * WHAT KEEPS IT HONEST. `system` is set, so the engine writes audit rows as
+ * `actorType: <system>, actorId: null` — the timeline renders "System
+ * (Campaign Intake)", never a fabricated person — and stamps no `createdBy`.
+ * The empty `userId` can never match a row (`isMe`, OWN scope) and is never
+ * written anywhere; `applyConfigChange` refuses a system principal outright,
+ * so this identity cannot leak into config surfaces whose log carries a
+ * NOT-NULL foreign key to a real user.
+ */
+export function systemPrincipal(system: SystemActorType): Principal {
+  return {
+    actor: {
+      userId: '',
+      roleId: '',
+      departmentId: null,
+      groupIds: [],
+      isAdmin: true,
+    },
+    permissions: { modules: new Map(), specials: new Set() },
+    user: {
+      id: '',
+      fullName: system,
+      email: '',
+      roleName: 'System',
+      departmentName: null,
+      languages: [],
+    },
+    system,
   };
 }

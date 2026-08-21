@@ -36,6 +36,9 @@ const REQUIRED_SPECIAL: Record<ConfigType, SpecialPermission> = {
   PICKLIST_OPTION: 'MANAGE_FIELDS_LAYOUTS',
   STATUS: 'MANAGE_STATUSES',
   MODULE: 'MANAGE_FIELDS_LAYOUTS',
+  // Webhook sources exist to feed campaign leads, so the matrix delegates them
+  // with the campaigns special rather than with the field/layout one.
+  WEBHOOK_SOURCE: 'MANAGE_CAMPAIGNS',
 };
 
 /**
@@ -89,6 +92,15 @@ export interface ConfigChangeResult<T> {
 }
 
 export async function applyConfigChange<T>(spec: ConfigChangeSpec<T>): Promise<ConfigChangeResult<T>> {
+  // Config is written by PEOPLE. `ConfigChangeLog.actorId` is a NOT-NULL
+  // foreign key to `users` precisely so every config change is attributable
+  // to someone — a system principal (`systemPrincipal()`) has no row there,
+  // and letting it through would fail at insert with an error nobody can act
+  // on. Refusing here keeps the invariant loud: pipelines write RECORDS, only
+  // humans write CONFIG.
+  if (spec.principal.system) {
+    throw new ConfigError('System pipelines cannot change configuration', 403, 'FORBIDDEN');
+  }
   assertConfigPermission(spec.principal, spec.configType, spec.special);
 
   return prisma.$transaction(

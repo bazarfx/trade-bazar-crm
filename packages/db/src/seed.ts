@@ -7,10 +7,10 @@
  * Run: npm run db:seed
  */
 
-import { PrismaClient, type FieldType, type StatusTag } from '@prisma/client';
+import { PrismaClient, Prisma, type FieldType, type StatusTag } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import {
-  MODULES, LEAD_FIELDS, USER_FIELDS, DEAL_FIELDS, LEAD_SECTIONS,
+  MODULES, LEAD_FIELDS, USER_FIELDS, DEAL_FIELDS, CAMPAIGN_FIELDS, LEAD_SECTIONS,
   LEAD_STATUSES, DEAL_STATUSES, LANGUAGES, DEPARTMENTS, SUGGESTED_ROLES,
 } from './seed-data.js';
 
@@ -147,9 +147,26 @@ async function main() {
     }
 
     for (const [i, f] of fields.entries()) {
+      // A RECORD_LINK names its target by module SLUG in seed data; the engine
+      // (and campaign intake's link discovery) reads the resolved id. An
+      // unknown slug is a typo in seed data and must fail loudly, never seed
+      // a link that points nowhere.
+      let relatedModuleId: string | null = null;
+      if (f.relatedModule !== undefined) {
+        const target = modules.get(f.relatedModule);
+        if (!target) throw new Error(`${slug}.${f.key}: unknown relatedModule "${f.relatedModule}"`);
+        relatedModuleId = target;
+      }
+      const defaultValue =
+        f.defaultValue === undefined ? Prisma.DbNull : (f.defaultValue as Prisma.InputJsonValue);
+
+      // `update` deliberately touches ONLY the two structural columns an Admin
+      // cannot edit from the field builder — link target and default — so a
+      // re-run backfills rows seeded before these existed without clobbering
+      // labels, sections or flags changed through the UI.
       const field = await prisma.fieldDefinition.upsert({
         where: { moduleId_key: { moduleId, key: f.key } },
-        update: {},
+        update: { relatedModuleId, defaultValue },
         create: {
           moduleId, key: f.key, label: f.label, type: f.type as FieldType,
           systemColumn: f.systemColumn ?? null,
@@ -159,6 +176,8 @@ async function main() {
           isIndexed: f.isIndexed ?? false,
           sectionId: sectionIds.get(f.section) ?? null,
           displayOrder: i,
+          relatedModuleId,
+          defaultValue,
         },
       });
 
@@ -182,6 +201,7 @@ async function main() {
   await seedFields('leads', LEAD_FIELDS, LEAD_SECTIONS);
   await seedFields('users', USER_FIELDS, ['User Information']);
   await seedFields('deals', DEAL_FIELDS, ['Deal Information']);
+  await seedFields('campaigns', CAMPAIGN_FIELDS, ['Campaign Information']);
 
   // ── first Admin user ─────────────────────────────────────────────
   // `??` would let an empty string through — .env.example ships these blank.

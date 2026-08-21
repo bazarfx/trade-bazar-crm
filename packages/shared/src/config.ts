@@ -25,6 +25,8 @@ export const SYSTEM_TAGS = ['CONVERTED', 'SIGNED_UP'] as const satisfies readonl
  *  slugs are Admin-editable data. */
 export const CONFIG_TYPES = [
   'FIELD', 'SECTION', 'STATUS', 'PICKLIST_OPTION', 'LAYOUT', 'MODULE',
+  /** a campaign-intake webhook source — its mapping is config, edited without a deploy */
+  'WEBHOOK_SOURCE',
 ] as const;
 export type ConfigType = (typeof CONFIG_TYPES)[number];
 

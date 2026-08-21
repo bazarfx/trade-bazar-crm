@@ -79,6 +79,23 @@ export const ICONS = {
       <path d="M17.5 10h-10" />
     </Glyph>
   ),
+  /** The CRM dropdown parent: a 2×2 tile grid, the file's "apps" glyph. */
+  grid: (p) => (
+    <Glyph {...p}>
+      <rect x="2.5" y="2.5" width="6.3" height="6.3" rx="1.2" />
+      <rect x="11.2" y="2.5" width="6.3" height="6.3" rx="1.2" />
+      <rect x="2.5" y="11.2" width="6.3" height="6.3" rx="1.2" />
+      <rect x="11.2" y="11.2" width="6.3" height="6.3" rx="1.2" />
+    </Glyph>
+  ),
+  /** The Help placeholder row. */
+  'help-circle': (p) => (
+    <Glyph {...p}>
+      <circle cx="10" cy="10" r="7.5" />
+      <path d="M7.7 7.6a2.4 2.4 0 0 1 4.6.8c0 1.6-2.3 2-2.3 3.3" />
+      <path d="M10 14.6h.01" />
+    </Glyph>
+  ),
   search: (p) => (
     <Glyph {...p}>
       <circle cx="9.2" cy="9.2" r="5.8" />

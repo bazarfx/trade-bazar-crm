@@ -37,6 +37,14 @@ export interface ListToolbarProps {
   pageSize: number;
   pageSizes: readonly number[];
   onChangePageSize: (size: number) => void;
+  /**
+   * PENDING duplicate flags in this module (spec §6.6) — 0 hides the button
+   * entirely, and 0 is also what a module whose storage cannot carry flags, or
+   * an actor who may not resolve them, receives from the page. A queue button
+   * that opens onto "you may not do this" would be a door drawn shut.
+   */
+  duplicateCount: number;
+  onOpenReview: () => void;
 }
 
 export function ListToolbar({
@@ -53,6 +61,8 @@ export function ListToolbar({
   pageSize,
   pageSizes,
   onChangePageSize,
+  duplicateCount,
+  onOpenReview,
 }: ListToolbarProps) {
   const [sortOpen, setSortOpen] = useState(false);
 
@@ -82,6 +92,19 @@ export function ListToolbar({
           </option>
         ))}
       </Select>
+
+      {duplicateCount > 0 ? (
+        // The review queue (spec §6.6), surfaced where the flagged records
+        // live. Visible only while there is something to review — an empty
+        // queue is not an action anyone needs offered.
+        <Button
+          variant="secondary"
+          onClick={onOpenReview}
+          data-track={`${slug}.review.open`}
+        >
+          Review duplicates ({duplicateCount})
+        </Button>
+      ) : null}
 
       <div className="ml-auto flex items-center gap-3">
         <Button

@@ -42,7 +42,9 @@ export default {
       fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
       fontSize: {
         // [size, lineHeight] — the scale the CRM screens actually use
-        overline: ['10px', { lineHeight: '12px', letterSpacing: '0.4px' }],
+        // Weight travels with the size: DESIGN-SPEC's type table has no regular
+        // 10px overline, so a caller cannot forget `font-medium` and ship one.
+        overline: ['10px', { lineHeight: '12px', letterSpacing: '0.4px', fontWeight: '500' }],
         xs: ['12px', { lineHeight: '16px' }],
         sm: ['14px', { lineHeight: '20px' }],
         base: ['14px', { lineHeight: '20px' }],

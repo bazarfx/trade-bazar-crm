@@ -151,6 +151,22 @@ async function moduleContext(principal: Principal, moduleSlug: string): Promise<
 
 const notFound = (): ConfigError => new ConfigError('Record not found', 404, 'NOT_FOUND');
 
+/**
+ * WHO an audit row says acted — resolved in ONE place.
+ *
+ * A principal built by `loadPrincipal` is a person: `USER` plus their id. One
+ * built by `systemPrincipal()` is a pipeline: its `SYSTEM_*` actorType with a
+ * NULL actorId, which is how `AuditLog` models actors that are not rows in
+ * `users` (the timeline labels those from the type — "System (Campaign
+ * Intake)"). Every write below asks this function rather than assuming a
+ * person, so a system-driven mutation can never fabricate a human actor.
+ */
+function actorIdentity(principal: Principal): { actorType: AuditEntry['actorType']; actorId: string | null } {
+  return principal.system
+    ? { actorType: principal.system, actorId: null }
+    : { actorType: 'USER', actorId: principal.actor.userId };
+}
+
 /** A non-empty string, or null. Payload values arrive as `unknown`. */
 function str(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
@@ -615,8 +631,11 @@ export async function createRecord(
           ...(storage.shape.hasJsonContainer
             ? { [storage.resolver.jsonColumn]: plain(json) }
             : {}),
+          // No fabricated author: a system pipeline stamps NULL, because the
+          // column names a user and there is none. The audit row's actorType
+          // carries the real identity.
           ...(storage.shape.createdByColumn
-            ? { [storage.shape.createdByColumn]: principal.actor.userId }
+            ? { [storage.shape.createdByColumn]: principal.system ? null : principal.actor.userId }
             : {}),
           // The owner is written to the COLUMN, whatever the module's fields say.
           // Invariant 1 is a storage guarantee, not a form guarantee: a role that
@@ -630,6 +649,7 @@ export async function createRecord(
         const created = await delegateOrThrow(tx, ctx).create({ data, select });
         const id = String(created['id']);
         const logger = auditWithin(tx);
+        const identity = actorIdentity(principal);
 
         // The whole field set as `null -> value`, so the first timeline entry is
         // also the record's opening snapshot.
@@ -642,8 +662,7 @@ export async function createRecord(
           entityType: storage.shape.entityType,
           entityId: id,
           action: 'RECORD_CREATED',
-          actorType: 'USER',
-          actorId: principal.actor.userId,
+          ...identity,
           changes,
           ipAddress: meta.ipAddress ?? null,
           userAgent: meta.userAgent ?? null,
@@ -659,8 +678,7 @@ export async function createRecord(
             entityType: storage.shape.entityType,
             entityId: id,
             action: 'ASSIGNED',
-            actorType: 'USER',
-            actorId: principal.actor.userId,
+            ...identity,
             changes: {
               [ownerKey]: { from: null, to: decision.ownerId },
               ...(decision.groupId && groupKey
@@ -673,7 +691,7 @@ export async function createRecord(
           });
         }
 
-        await flagDuplicates(tx, ctx, { id, values: parsed, meta, actorId: principal.actor.userId });
+        await flagDuplicates(tx, ctx, { id, values: parsed, meta, identity });
         return created;
       },
       // Not Prisma's 5s default, and the reason is the rota.
@@ -744,7 +762,13 @@ function matchOn(storage: Storage, key: string, value: unknown): Row {
 async function flagDuplicates(
   tx: Tx,
   ctx: ModuleContext,
-  record: { id: string; values: Row; meta: AuditMeta; actorId: string },
+  record: {
+    id: string;
+    values: Row;
+    meta: AuditMeta;
+    /** the creator's audit identity — a person, or a system pipeline */
+    identity: { actorType: AuditEntry['actorType']; actorId: string | null };
+  },
 ): Promise<void> {
   const { storage } = ctx;
   // `DuplicateFlag` FKs point at one table only — see `canFlagDuplicates`.
@@ -819,8 +843,7 @@ async function flagDuplicates(
       entityType: storage.shape.entityType,
       entityId: record.id,
       action: 'DUPLICATE_FLAGGED',
-      actorType: 'USER',
-      actorId: record.actorId,
+      ...record.identity,
       changes: {
         duplicateOf: { from: null, to: candidateId },
         matchReason: { from: null, to: probe.reason },
@@ -946,8 +969,7 @@ export async function updateRecord(
         entityType: storage.shape.entityType,
         entityId: id,
         action: actionFor(storage, f),
-        actorType: 'USER',
-        actorId: principal.actor.userId,
+        ...actorIdentity(principal),
         changes: { [f.key]: diff[f.key]! },
         ipAddress: meta.ipAddress ?? null,
         userAgent: meta.userAgent ?? null,
@@ -1057,8 +1079,7 @@ export async function reassignRecord(
         entityType: storage.shape.entityType,
         entityId: id,
         action: 'REASSIGNED',
-        actorType: 'USER',
-        actorId: principal.actor.userId,
+        ...actorIdentity(principal),
         // Old owner -> new owner, plus WHY, exactly as spec §6.7 requires.
         changes: {
           [auditKey]: { from, to: ownerId },
@@ -1161,8 +1182,7 @@ export async function reassignRecords(
             entityType: storage.shape.entityType,
             entityId: String(row['id']),
             action: 'REASSIGNED' as const,
-            actorType: 'USER' as const,
-            actorId: principal.actor.userId,
+            ...actorIdentity(principal),
             changes: {
               [auditKey]: { from: str(row[ownerColumn]), to: ownerId },
               [ASSIGNMENT_REASON_KEY]: { from: null, to: 'manual' satisfies AssignmentReason },
@@ -1236,8 +1256,7 @@ export async function softDeleteRecord(
         entityType: storage.shape.entityType,
         entityId: id,
         action: 'RECORD_DELETED',
-        actorType: 'USER',
-        actorId: principal.actor.userId,
+        ...actorIdentity(principal),
         changes: { [column]: { from: false, to: true } },
         ipAddress: meta.ipAddress ?? null,
         userAgent: meta.userAgent ?? null,

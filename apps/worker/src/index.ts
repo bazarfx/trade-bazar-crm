@@ -14,6 +14,7 @@ import { connection } from './lib/redis.js';
 import { closeQueues } from './lib/queues.js';
 import { startMaintenanceWorker, scheduleMaintenance } from './jobs/maintenance.js';
 import { startImportsWorker } from './jobs/imports.js';
+import { startCampaignIntakeWorker } from './jobs/campaign-intake.js';
 
 const workers: Worker[] = [];
 
@@ -25,6 +26,11 @@ async function main() {
   // the half that actually writes records, one staged row at a time through
   // the record engine.
   workers.push(startImportsWorker());
+
+  // Campaign intake. The public endpoint in apps/web stores each raw payload
+  // and enqueues its id; this consumer runs the source's Admin-edited mapping
+  // over it and creates the record through the engine as a system actor.
+  workers.push(startCampaignIntakeWorker());
 
   console.log(`▸ worker up — ${workers.length} consumer(s): ${workers.map((w) => w.name).join(', ')}`);
 }

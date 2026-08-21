@@ -292,11 +292,24 @@ export default async function ModulePage({
    * the move unless both hold, so the screen asks the same question rather
    * than drawing a button that always answers 422.
    */
-  const ownerColumn = storageFor(
+  const storageShape = storageFor(
     { id: mod.id, slug: mod.slug, isCore: mod.isCore },
     fields.map((f) => ({ key: f.key, type: f.type, systemColumn: f.systemColumn })),
-  ).shape.ownerColumn;
-  const hasOwner = mod.hasOwner && ownerColumn !== null;
+  ).shape;
+  const hasOwner = mod.hasOwner && storageShape.ownerColumn !== null;
+
+  /**
+   * The review queue's badge (spec §6.6): PENDING duplicate flags for this
+   * module. Counted only when the button could exist at all — the storage
+   * shape says whether flags can point at this table, and resolving a pair is
+   * an edit-level power, both asserted again by the duplicates service. Zero
+   * means "draw no button", so the gated-out cases and the empty queue are
+   * deliberately the same number.
+   */
+  const duplicateCount =
+    storageShape.canFlagDuplicates && engine.can('edit', mod.slug)
+      ? await prisma.duplicateFlag.count({ where: { moduleSlug: mod.slug, status: 'PENDING' } })
+      : 0;
 
   /**
    * Every user id the rows on THIS page mention, resolved to a name in one
@@ -430,6 +443,7 @@ export default async function ModulePage({
         serverError={serverError}
         hasOwner={hasOwner}
         userNames={userNames}
+        duplicateCount={duplicateCount}
       />
     </div>
   );

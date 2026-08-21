@@ -44,6 +44,7 @@ const CAN_VIEW: readonly SpecialPermission[] = [
   'VIEW_AUDIT_LOGS',
   'MANAGE_FIELDS_LAYOUTS',
   'MANAGE_STATUSES',
+  'MANAGE_CAMPAIGNS',
 ];
 
 /** Same fail-closed style as assertConfigPermission: no grant, no list. */
