@@ -116,7 +116,7 @@ async function visibleFields(
   // Hidden fields are dropped HERE, before anything is rendered — the record
   // itself is stripped on serialisation, but the LABELS are config and would
   // otherwise leak the existence of a field this role may not see.
-  const refOptions = await referenceOptionsFor(fields);
+  const refOptions = await referenceOptionsFor(rows);
   const hidden = engine.hiddenFields(moduleSlug);
   return rows
     .filter((f) => !hidden.has(f.key))

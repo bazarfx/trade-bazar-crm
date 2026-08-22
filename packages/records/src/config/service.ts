@@ -39,6 +39,11 @@ const REQUIRED_SPECIAL: Record<ConfigType, SpecialPermission> = {
   // Webhook sources exist to feed campaign leads, so the matrix delegates them
   // with the campaigns special rather than with the field/layout one.
   WEBHOOK_SOURCE: 'MANAGE_CAMPAIGNS',
+  // Teams are people administration, delegated by their own special (spec
+  // §5.1) — a field manager must not be able to re-route a language by
+  // editing a group, and a group manager must not be able to move a field.
+  GROUP: 'MANAGE_DEPARTMENTS_GROUPS',
+  DEPARTMENT: 'MANAGE_DEPARTMENTS_GROUPS',
 };
 
 /**

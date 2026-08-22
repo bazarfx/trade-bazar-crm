@@ -6,7 +6,7 @@
 import 'server-only';
 import { prisma } from '@crm/db';
 import { PermissionEngine } from '@crm/core';
-import type { ConfigAction, ConfigType, SpecialPermission } from '@crm/shared';
+import { isModuleFreeConfigType, type ConfigAction, type ConfigType, type SpecialPermission } from '@crm/shared';
 import type { Principal } from '@/lib/auth/actor';
 import { canReadModuleConfig, hasConfigPermission } from '@/lib/config/access';
 import { ConfigError } from '@/lib/config/service';
@@ -45,6 +45,7 @@ const CAN_VIEW: readonly SpecialPermission[] = [
   'MANAGE_FIELDS_LAYOUTS',
   'MANAGE_STATUSES',
   'MANAGE_CAMPAIGNS',
+  'MANAGE_DEPARTMENTS_GROUPS',
 ];
 
 /** Same fail-closed style as assertConfigPermission: no grant, no list. */
@@ -167,6 +168,15 @@ async function redactedRowIds(
 
   const out = new Set<string>();
   for (const row of rows) {
+    // A group or department belongs to no module, so there is no module gate
+    // to re-check. Its snapshot carries member ids and team names, which the
+    // read paths (listMembers, includeDeleted) put behind the config special —
+    // the log gates on exactly that special and nothing looser.
+    if (isModuleFreeConfigType(row.configType as ConfigType)) {
+      if (!hasConfigPermission(principal, row.configType as ConfigType)) out.add(row.id);
+      continue;
+    }
+
     const moduleId = moduleIdByRow.get(row.id) ?? null;
     const slug = moduleId === null ? undefined : slugById.get(moduleId);
 

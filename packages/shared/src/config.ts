@@ -27,8 +27,24 @@ export const CONFIG_TYPES = [
   'FIELD', 'SECTION', 'STATUS', 'PICKLIST_OPTION', 'LAYOUT', 'MODULE',
   /** a campaign-intake webhook source — its mapping is config, edited without a deploy */
   'WEBHOOK_SOURCE',
+  /** a language team (spec §5.3) — its name, language and member list steer assignment */
+  'GROUP',
+  /** a view-scope boundary (spec §5.2) */
+  'DEPARTMENT',
 ] as const;
 export type ConfigType = (typeof CONFIG_TYPES)[number];
+
+/**
+ * Config types that belong to NO ModuleDefinition. A group or a department
+ * describes people, not a module's shape, so a reader that resolves a change
+ * to its module — the log viewer's redaction, the undo path — has nothing to
+ * resolve for these and gates on the config special alone.
+ */
+export const MODULE_FREE_CONFIG_TYPES = ['GROUP', 'DEPARTMENT'] as const satisfies readonly ConfigType[];
+
+export function isModuleFreeConfigType(configType: ConfigType): boolean {
+  return (MODULE_FREE_CONFIG_TYPES as readonly ConfigType[]).includes(configType);
+}
 
 export const CONFIG_ACTIONS = ['CREATE', 'UPDATE', 'DELETE', 'RESTORE', 'REORDER'] as const;
 export type ConfigAction = (typeof CONFIG_ACTIONS)[number];

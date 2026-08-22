@@ -16,6 +16,7 @@ import { FilterToggle } from './_components/filter-toggle';
 import { ListScreen } from './_components/list-screen';
 import { NO_VIEW, parseListQuery, type ListQueryLimits } from './_components/list-query';
 import { SearchBox } from './_components/search-box';
+import { ProfileTabs } from './_components/profile-tabs';
 import type { FilterField } from './_components/filter-panel';
 import type { PickerOption } from './_components/filter-condition-row';
 
@@ -301,11 +302,26 @@ export default async function ModulePage({
    * the move unless both hold, so the screen asks the same question rather
    * than drawing a button that always answers 422.
    */
-  const storageShape = storageFor(
+  const storage = storageFor(
     { id: mod.id, slug: mod.slug, isCore: mod.isCore },
     fields.map((f) => ({ key: f.key, type: f.type, systemColumn: f.systemColumn })),
-  ).shape;
+  );
+  const storageShape = storage.shape;
   const hasOwner = mod.hasOwner && storageShape.ownerColumn !== null;
+
+  /**
+   * Whether this module's rows are USER ACCOUNTS — the Profile module of spec
+   * §5, which carries Groups, Departments and Roles as sub-modules under a tab
+   * row. A storage property, never a slug: the resolver names the table the
+   * module lives in, and only the user table has groups and departments
+   * hanging off it. Same question, same shape, as `hasLedger` on the record
+   * screen.
+   */
+  const isProfileModule = storage.delegateName === 'user';
+  const canManageGroups =
+    principal.actor.isAdmin || principal.permissions.specials.has('MANAGE_DEPARTMENTS_GROUPS');
+  const canManageRoles =
+    principal.actor.isAdmin || principal.permissions.specials.has('MANAGE_USERS_ROLES');
 
   /**
    * The review queue's badge (spec §6.6): PENDING duplicate flags for this
@@ -440,6 +456,18 @@ export default async function ModulePage({
           hasOwner={hasOwner}
         />
       </div>
+
+      {/* The Profile sub-navigation (spec §5) — only when the rows here are
+          user accounts, decided above from the storage shape. */}
+      {isProfileModule ? (
+        <ProfileTabs
+          slug={mod.slug}
+          labelPlural={mod.labelPlural}
+          active="users"
+          canManageGroups={canManageGroups}
+          canManageRoles={canManageRoles}
+        />
+      ) : null}
 
       <ListScreen
         // Measured @284,190: the search box sits INSIDE the filter rail, under

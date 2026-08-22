@@ -22,6 +22,8 @@ import { ConfigError, assertConfigPermission } from './service';
 import { softDeleteField, restoreField } from './fields';
 import { deleteStatus } from './statuses';
 import { softDeleteSection } from './sections';
+import { replaceGroupMembers, softDeleteGroup } from './groups';
+import { softDeleteDepartment } from './departments';
 
 /** Prisma delegate per config type. */
 const TABLE_FOR: Partial<Record<ConfigType, string>> = {
@@ -34,6 +36,11 @@ const TABLE_FOR: Partial<Record<ConfigType, string>> = {
   // the token hash or the last payload), so undoing a mapping edit writes
   // exactly those back; undoing a CREATE pauses the source via `isActive`.
   WEBHOOK_SOURCE: 'webhookSource',
+  // A group snapshot carries its member id list next to the scalars; the
+  // scalars write back through the generic path and the list is replayed
+  // through the groups service so each person's timeline records the move.
+  GROUP: 'group',
+  DEPARTMENT: 'department',
 };
 
 export interface RevertOptions {
@@ -84,7 +91,7 @@ export async function revertConfigChange(
       await undoReorder(table, change.configId, change.before);
       break;
     default:
-      await undoUpdate(table, change.configId, change.before);
+      await undoUpdate(principal, table, change.configId, change.before);
   }
 
   await prisma.$transaction([
@@ -118,6 +125,18 @@ async function undoCreate(
   table: string,
   opts: RevertOptions,
 ): Promise<void> {
+  // People config belongs to no module (MODULE_FREE_CONFIG_TYPES), so there
+  // is no slug to resolve — and its deletes carry their own guardrails (the
+  // nominated default pool, the occupied team), which the forward path runs.
+  switch (configType) {
+    case 'GROUP':
+      await softDeleteGroup(principal, configId, { confirmed: opts.confirmed ?? false });
+      return;
+    case 'DEPARTMENT':
+      await softDeleteDepartment(principal, configId, { confirmed: opts.confirmed ?? false });
+      return;
+  }
+
   const slug = await moduleSlugFor(table, configId);
 
   switch (configType) {
@@ -181,23 +200,42 @@ async function undoReorder(table: string, moduleId: string, before: unknown): Pr
 }
 
 /** Inverse of UPDATE / RESTORE — write the before-image back, then replay the
- *  picklist options the same snapshot carries. updateField mutates the field
+ *  relation lists the same snapshot carries. updateField mutates the field
  *  AND its options under one change; reverting only the scalars would leave a
- *  retired option retired with no way left to bring it back. */
-async function undoUpdate(table: string, configId: string, before: unknown): Promise<void> {
+ *  retired option retired with no way left to bring it back. A group's member
+ *  list is the same shape of problem: a membership change logs as an UPDATE
+ *  whose scalars did not move at all. */
+async function undoUpdate(
+  principal: Principal,
+  table: string,
+  configId: string,
+  before: unknown,
+): Promise<void> {
   if (!before || typeof before !== 'object') {
     throw new ConfigError('No before-image recorded; cannot revert', 422, 'GUARDRAIL');
   }
   const snapshot = before as Record<string, unknown>;
-  const delegate = rowDelegate(prisma, table);
 
   await prisma.$transaction(
-    async () => {
-      await delegate.update({ where: { id: configId }, data: scalarColumns(table, snapshot) });
+    async (tx) => {
+      await rowDelegate(tx, table).update({
+        where: { id: configId },
+        data: scalarColumns(table, snapshot),
+      });
 
       const options = snapshot['options'];
       if (table === 'fieldDefinition' && Array.isArray(options)) {
         await replayOptions(configId, options as Record<string, unknown>[]);
+      }
+
+      const memberIds = snapshot['memberIds'];
+      if (table === 'group' && Array.isArray(memberIds)) {
+        await replaceGroupMembers(
+          tx,
+          principal,
+          configId,
+          memberIds.filter((id): id is string => typeof id === 'string'),
+        );
       }
     },
     { timeout: 30_000, maxWait: 5_000 },
@@ -243,7 +281,7 @@ interface RowDelegate {
   findUnique: (a: unknown) => Promise<{ moduleId?: string } | null>;
 }
 
-function rowDelegate(client: typeof prisma, table: string): RowDelegate {
+function rowDelegate(client: typeof prisma | Prisma.TransactionClient, table: string): RowDelegate {
   return (client as unknown as Record<string, RowDelegate>)[table]!;
 }
 
