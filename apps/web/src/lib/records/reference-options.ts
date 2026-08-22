@@ -22,6 +22,28 @@ export interface ReferenceOption {
 type Loader = () => Promise<ReferenceOption[]>;
 
 const LOADERS: Record<string, Loader> = {
+  // Group and campaign links are RECORD_LINK fields, but their targets are
+  // small config/core tables a name lookup covers outright — the generic
+  // cross-module record resolver the cell renderer defers to does not exist
+  // yet, and an Admin reading "f257f831-7a13-…" under Group cannot act on it.
+  groupId: async () =>
+    (
+      await prisma.group.findMany({
+        where: { isDeleted: false },
+        orderBy: { name: 'asc' },
+        select: { id: true, name: true },
+      })
+    ).map((g) => ({ value: g.id, label: g.name })),
+
+  campaignId: async () =>
+    (
+      await prisma.campaign.findMany({
+        where: { isDeleted: false },
+        orderBy: { name: 'asc' },
+        select: { id: true, name: true },
+      })
+    ).map((c) => ({ value: c.id, label: c.name })),
+
   roleId: async () =>
     (
       await prisma.role.findMany({
