@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { prisma } from '@crm/db';
+import { referenceOptionsFor } from '@/lib/records/reference-options';
 import { PermissionEngine } from '@crm/core';
 import type { Principal } from '@/lib/auth/actor';
 import { getPrincipal } from '@/lib/auth/session';
@@ -115,6 +116,7 @@ async function visibleFields(
   // Hidden fields are dropped HERE, before anything is rendered — the record
   // itself is stripped on serialisation, but the LABELS are config and would
   // otherwise leak the existence of a field this role may not see.
+  const refOptions = await referenceOptionsFor(fields);
   const hidden = engine.hiddenFields(moduleSlug);
   return rows
     .filter((f) => !hidden.has(f.key))
@@ -123,7 +125,7 @@ async function visibleFields(
       label: f.label,
       type: f.type,
       systemColumn: f.systemColumn,
-      options: f.options,
+      options: refOptions.get(f.key) ?? f.options,
     }));
 }
 

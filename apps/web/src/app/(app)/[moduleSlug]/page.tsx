@@ -1,5 +1,6 @@
 import { notFound, redirect } from 'next/navigation';
 import { prisma } from '@crm/db';
+import { referenceOptionsFor } from '@/lib/records/reference-options';
 import { PermissionEngine } from '@crm/core';
 import { operatorsFor, type FieldType, type SavedViewDto, type SortSpec } from '@crm/shared';
 import { getPrincipal } from '@/lib/auth/session';
@@ -381,6 +382,10 @@ export default async function ModulePage({
   // A field is filterable when its TYPE declares operators — the field type
   // registry decides, so a future type with none drops out here without this
   // screen being touched.
+  // Role / department columns point at config tables, exactly as the status
+  // column does — without this the Users screen shows ids where names belong.
+  const refOptions = await referenceOptionsFor(fields);
+
   const filterFields: FilterField[] = fields
     .filter((f) => operatorsFor(f.type).length > 0)
     .map((f) => ({
@@ -390,7 +395,9 @@ export default async function ModulePage({
       // The status field is a pointer into the `Status` table, not a picklist:
       // its choices are the module's statuses, which is why it looks optionless
       // when read from FieldOption rows.
-      options: f.systemColumn === STATUS_COLUMN ? statusOptions : f.options,
+      options:
+        refOptions.get(f.key) ??
+        (f.systemColumn === STATUS_COLUMN ? statusOptions : f.options),
       usesUsers: f.type === 'USER_LOOKUP',
     }));
 
@@ -469,8 +476,8 @@ export default async function ModulePage({
           type: f.type,
           systemColumn: f.systemColumn,
           // A picklist cell shows its option LABEL, not the value stored
-          // underneath it.
-          options: f.options,
+          // underneath it — including reference-backed ones (role, department).
+          options: refOptions.get(f.key) ?? f.options,
         }))}
         statuses={statusRows}
         rows={rows}
