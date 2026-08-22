@@ -6,6 +6,7 @@ import { TrackListener } from '@/components/track-listener';
 import { OverlayProvider } from '@/components/overlay/overlay-context';
 import { Sidebar, type ShellModule, type ShellSettingsPage } from '@/components/shell/sidebar';
 import { TopBar } from '@/components/shell/topbar';
+import { PageTitleProvider } from '@/components/shell/page-title';
 
 /**
  * The signed-in shell: sidebar left, top bar over the content column, page
@@ -78,15 +79,28 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <OverlayProvider>
       <TrackListener />
+      <PageTitleProvider>
       <div className="flex min-h-screen bg-background">
         <Sidebar modules={navModules} settingsPages={settingsPages} />
         {/* min-w-0 so a wide table scrolls inside the content column rather
             than stretching the flex row and pushing the sidebar off screen. */}
         <div className="flex min-w-0 flex-1 flex-col">
-          <TopBar user={{ fullName: user.fullName, roleName: user.roleName }} />
-          <main className="min-w-0 flex-1 p-6">{children}</main>
+          {/* `id` is for the avatar and nothing else: the demo face is a pure
+              function of it, so the same person keeps the same face across
+              renders and across screens. See components/demo-avatar.ts. */}
+          {/* The bar carries the page TITLE on the left as well as the
+              profile on the right — measured @286,21 and @1216,12 in the same
+              68px band. Pages declare their own through `<PageTitle>`; see
+              components/shell/page-title.tsx. */}
+          <TopBar user={{ id: user.id, fullName: user.fullName, roleName: user.roleName }} />
+          {/* p-4, not p-6: the file insets the content column by 16, which is
+              what puts `Rectangle 5` and the body panels at x=272 of 1440
+              (256 + 16) and gives them the measured 1152 width. Screens that
+              want the old 24 add it themselves. */}
+          <main className="min-w-0 flex-1 p-4">{children}</main>
         </div>
       </div>
+      </PageTitleProvider>
     </OverlayProvider>
   );
 }

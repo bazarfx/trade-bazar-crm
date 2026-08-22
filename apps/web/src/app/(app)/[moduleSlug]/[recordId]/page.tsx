@@ -9,7 +9,8 @@ import { resolveModuleLayout } from '@/lib/config/layouts';
 import { ConfigError } from '@/lib/config/service';
 import { coreModuleStorages, storageFor } from '@/lib/records/list';
 import { getRecord, getTimeline } from '@/lib/records/service';
-import { StatusChip } from '@/components/ui';
+import { Avatar, StatusChip } from '@/components/ui';
+import { demoAvatarFor } from '@/components/demo-avatar';
 import { AnalyticsPanel } from './_components/analytics-panel';
 import { changeEntries } from './_components/changes';
 import { DepositsPanel } from './_components/deposits-panel';
@@ -72,6 +73,16 @@ async function loadRecord(principal: Principal, slug: string, recordId: string) 
     if (err instanceof ConfigError && (err.status === 404 || err.status === 403)) return null;
     throw err;
   }
+}
+
+/**
+ * `src` is optional on `AvatarProps`; spread the prop only when there is one
+ * rather than passing an explicit `undefined`, so an id-less record falls
+ * through to the initials disc instead of being handed a value that is not one.
+ */
+function avatarSrc(id: string): { src?: string } {
+  const src = demoAvatarFor(id);
+  return src === undefined ? {} : { src };
 }
 
 /** A displayable string, or null. Field values arrive as `unknown`. */
@@ -305,6 +316,22 @@ export default async function RecordDetailPage({
           >
             ← {mod.labelPlural}
           </Link>
+          {/**
+           * The record's picture, at the LARGER of the two sizes the file
+           * draws (44, the top-bar `Avatar`; the other is the 24 in a table
+           * row). The .fig contains no record-detail frame at all — measured:
+           * its only CRM screens are `CRM _ Leads`, its filter/sort/saved-
+           * filter states and `CRM _ Leads_Import` — so per CLAUDE.md's "Not
+           * in the Figma" rule this composes from the drawn primitives rather
+           * than inventing a third size. 44 is the size the file uses when an
+           * avatar identifies a whole page's subject.
+           *
+           * The image is DEMO imagery derived from the record id; the reason
+           * it is a function rather than stored data is in
+           * components/demo-avatar.ts. `name` falls back to initials when the
+           * id is blank, and is announced by the `h1` beside it either way.
+           */}
+          <Avatar size={44} name={title} {...avatarSrc(record.id)} />
           {/* Truncate, never wrap: a record title is customer data of unbounded
               length and a two-line title moves every panel below it. */}
           <h1 className="min-w-0 truncate text-title font-medium text-heading" title={title}>

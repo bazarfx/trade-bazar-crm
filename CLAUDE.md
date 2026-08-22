@@ -98,9 +98,22 @@ picklist option or field label by name.
 
 ## UI rules
 
-- **Full-screen overlays everywhere.** Every create/edit form, the field
-  builder, the layout editor and the review queue open full screen. There are
-  no small modal windows anywhere in this product.
+- **The Figma file is the authority on layout.** `Zoho.fig` is committed at
+  `tools/figma/Zoho.fig`; measure it with `tools/figma/inspect.js` rather than
+  recalling it. `docs/DESIGN-SPEC.md` records what has been measured.
+- **Overlay sizes come from the file, not from a rule.** It draws three:
+  centred pop-ups at **511** wide (Save Filter, Delete Saved Filter, Edit Name,
+  Apply Auto Mapping, Assign Default Value, unsaved-changes guards), **1015**
+  (Create New Fields), and **1152** (the import stage panels, which sit in the
+  page rather than over it). Full screen is for the big authoring surfaces the
+  file does not draw — the record form, field builder, layout editor, roles
+  matrix, review queue.
+  *This replaces the earlier "no small modals anywhere" rule, which the file
+  contradicts. Superseded 22 Aug 2026 on the client's instruction to follow the
+  Figma strictly.*
+- **Import is a PAGE, not an overlay** — `/[moduleSlug]/import`, with the
+  sidebar and top bar in place, a five-chip stage strip, and a 1152-wide panel
+  whose height changes per stage.
 - **Zoho CRM is the functional reference.** The client's team works in Zoho
   daily; the target is zero retraining.
 - **Every interactive element carries `data-track`**, named

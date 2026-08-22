@@ -71,9 +71,32 @@ The reference frame. Canvas `#f6f8fa`.
 ### Top bar — 1184×68, over the content column
 `Rectangle 2` in the frame: `x 256, y 0`, 1184×68, `bg #ffffff`, 1px bottom
 border `#e5e7eb`. The **user profile lives here**, right-aligned with a 16px
-margin (the group sits at x=1216 of 1440): avatar 44 (circle) +
-column(role overline 10px `#757575`, name 14px Medium), gap 12. Page content
-starts below this bar.
+margin (the group sits at x=1216 of 1440). Page content starts below this bar.
+
+`Profil` @1216,12 — 208×44, `flex-row gap:12`:
+
+| Node | Geometry | Style |
+|---|---|---|
+| `Avatar` (ROUNDED_RECTANGLE) | @0,0 44×44 | `r:36.22`, `fills:[IMAGE/FILL]` — a circle |
+| `Content` | @56,4 152×36 | `flex-row gap:4` |
+| ↳ `Frame 1` | @0,0 112×36 | `flex-col gap:4` |
+| ↳↳ `Title` | @0,0 112×20 | Medium 14px/20, `#111827` — "Andrew Smith" |
+| ↳↳ `OVERLINE` | @0,24 112×12 | Medium 10px/12 ls 0.4, `#6b7280` — "Product Manager" |
+| ↳ `Icon / Chevron` | @136,10 16×16 | |
+
+⚠️ Two corrections, both measured off this frame on 22 Aug 2026:
+
+- **The NAME is on top and the role below it** (`Title` at y=0, `OVERLINE` at
+  y=24). An earlier revision of this section had them the other way round —
+  that ordering is real, but it belongs to the `Sidebar - Open` COMPONENT
+  (`OVERLINE` @0,0, `Title` @0,16), not to this screen. The rule below settles
+  it: when the template and a screen disagree, the screen wins.
+- **The overline is `#6b7280` (`--body`), not `#757575`.** `#757575` is the
+  sidebar component's muted grey; the top bar's is a token exactly.
+
+The 16×16 chevron is drawn in the file but **not built** — it promises a
+profile menu and there is none (sign-out is the sidebar's "Logout Account"
+row). It goes in when there is a menu behind it.
 
 > An earlier revision of this section placed the profile inside the sidebar
 > and described no top bar — that came from the sidebar component template,
@@ -135,6 +158,40 @@ ARK Account Number · Location`
 
 Cells are 14px Regular. This is a COLUMN SET, not a schema: it is seeded
 through `FieldDefinition` + a saved view, never hardcoded.
+
+### Avatars — the two sizes the file draws
+
+| Node | Where | Geometry |
+|---|---|---|
+| `Avatar` (ROUNDED_RECTANGLE) | top bar `Profil` | 44×44, `r:36.22`, `fills:[IMAGE/FILL]` |
+| `Display Picture` (FRAME) | `Table / Base /  List` → `Content` | 24×24, `r:24`, `fills:[IMAGE/FILL]` |
+
+Measured: only the **first** cell of a row draws the picture — the 200-wide
+Lead Name cell. Every other column holds the same node with `visible: false`.
+That is why `DataTableColumn.avatarKey` is per-column config rather than
+"column 0 gets an avatar"; the list page sets it on the column whose key is
+`ModuleDefinition.recordTitleField`.
+
+There is no third size and no avatar stack anywhere in the file, and no
+record-detail frame at all — that screen composes from these two and uses 44,
+the size the file gives an avatar that identifies a whole page's subject.
+
+Neither `User` nor `Lead` carries a photo yet (`User.profilePhoto` is a seeded
+IMAGE field, but the upload path does not exist), so the faces are DEMO
+imagery extracted from the .fig into `apps/web/public/figma/avatars/` and
+chosen by hashing the record id — a pure function, never stored. See
+`apps/web/src/components/demo-avatar.ts`.
+
+### Saved-filter row menu
+
+Measured on `CRM _ Leads_Filter By leads_Saved filter Edit`: a saved-filter row
+(`Frame 482702`, 206×20, `bg #f6f8fa`) carries name + count badge, and ends in
+`ph:dots-three-vertical-bold` 16×16 flush right at x=470 of 284…490. It opens
+`Group 3` @388,236 — 98×32, two `Drop Down` rows: **Rename** then **Delete**
+(resting `bg #ffffff` / `#6b7280`, hovered `bg #f6f8fa` / `#111827`). Those
+two rows are drawn at 16px with 6px text, which is the whole dropdown rendered
+at a reduced scale — below every step of the type scale, so the build uses the
+Sort menu's measured 28px row and 10px text instead.
 
 ---
 
@@ -243,6 +300,33 @@ Footer of the rail: **Clear** and **Apply Filter**. Once a filter is applied a
 **Save Filter** action appears, and naming it uses an **Add Name** input. Saved
 views then surface as a fourth rail group, **Saved Filters (9)** with a live
 count — matching spec §10's "saved views with live match counts".
+
+#### The three pop-ups — 511 wide
+
+All named "Pop up" in the file, so located by their title text:
+
+| Frame | Content | Footer (two 222×40 buttons, gap 18) |
+|---|---|---|
+| 511×252 **Save Filter** | `Text Area` 463×70 → `Label` "Filter Name" (Regular 14px `#111827`) + `Input Base` 463×41 (pad 10/12, `bg #ffffff`, `border #e5e7eb`, `r:4`, placeholder "Enter..." `#6b7280`) | Cancel `#f6f8fa` · Save `#00667a` |
+| 511×252 **Edit Name of Save Filter** | identical | Cancel `#f6f8fa` · Save `#00667a` |
+| 511×203 **Delete Saved Filter** | `Label` only — "Are you sure you want to delete this filter?" Regular 14px `#111827` | Cancel `#f6f8fa` · Delete `#ef4444` |
+
+Common shell (identical in all three, and the reason `components/ui/popup.tsx`
+owns every number): `flex-col gap:24 pad:24`, `bg #ffffff`,
+`border #e5e7eb 1px`, `r:8`; `Title` 463×22 `flex-row gap:16` with an
+`Icon/X` 20×20 flush right, title Medium 18px `#111827`; `Separator` 463×1;
+`Content` `flex-col gap:20`; footer `Frame 482701` 463×40 `flex-row gap:18`.
+
+**Height follows content — only the width is fixed.** The same frame is drawn
+at 203, 242, 252, 353 and 378 in the file. That is why the Save Filter pop-up
+here is taller than 252: it carries our two publish toggles (`isShared`,
+`isDefault`), which the file's own Content frame has a slot for — a
+`Checkboxes Component / Checkbox` 290×24 node, `visible: false` in every
+instance because Zoho's dialog has nothing to put in it.
+
+These replace the full-screen versions per CLAUDE.md's rewritten UI rules
+(22 Aug 2026). Built in
+`apps/web/src/app/(app)/[moduleSlug]/_components/saved-view-popups.tsx`.
 
 Persisted in `SavedView` (columns + filters + sort, private or shared, and a
 per-role default). The filter tree is `FilterNode` from `packages/shared` and

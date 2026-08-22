@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { DataTable, type DataTableColumn, type DataTableSelection } from '@/components/ui';
+import { DEMO_AVATAR_ROW_KEY, demoAvatarFor } from '@/components/demo-avatar';
 import { renderFieldCell, type CellField, type StatusOption } from './cell';
 
 /**
@@ -35,6 +36,15 @@ export interface RecordTableProps {
   sort?: { key: string; direction: 'asc' | 'desc' };
   /** a header was activated — the screen decides what sorting by it means */
   onSortColumn?: (key: string) => void;
+  /**
+   * A header's `oui:filter` funnel was activated. Measured: EVERY
+   * `Table / Base / Header` cell in the `CRM _ Leads` frame carries an
+   * `oui:filter` 16x16 flush right (x=686 of the 200-wide first cell, 946 of
+   * the 260-wide Email cell, …) — it is not decoration on the title column.
+   * `DataTable` draws the funnel only when this handler exists, so omitting it
+   * was what left the built header a control short of the file.
+   */
+  onFilterColumn?: (key: string) => void;
   /** id → name for the user columns; absent, those cells show the stored id */
   userNames?: ReadonlyMap<string, string>;
   /** present ⇒ the table draws its selection column. See DataTableSelection. */
@@ -51,6 +61,7 @@ export function RecordTable({
   loading = false,
   sort,
   onSortColumn,
+  onFilterColumn,
   userNames,
   selection,
 }: RecordTableProps) {
@@ -61,10 +72,34 @@ export function RecordTable({
   const fieldByKey = useMemo(() => new Map(fields.map((f) => [f.key, f])), [fields]);
   const statusById = useMemo(() => new Map(statuses.map((s) => [s.id, s])), [statuses]);
 
+  /**
+   * The 24x24 `Display Picture` the file draws inside the FIRST cell of every
+   * row (`Table / Base /  List` 200x45 → `Content` gap:8 → Display Picture +
+   * text). Measured: every other column's instance of that node is
+   * `visible: false`, which is exactly what `DataTableColumn.avatarKey` being
+   * per-column expresses.
+   *
+   * FILLED HERE rather than on the server because the rows arrive by two
+   * different routes — the page renders them when the list is unfiltered, and
+   * `ListScreen` POSTs for them when an ad-hoc filter is in effect. This is
+   * the one place both paths pass through, so neither can end up with an
+   * avatar the other lacks.
+   *
+   * The value is DEMO imagery derived from the record id and is never stored;
+   * components/demo-avatar.ts explains why that is the honest option until an
+   * IMAGE field is wired. When it is, the page points `avatarKey` at that
+   * field's key and this whole map becomes dead weight to delete — it cannot
+   * shadow a real value, because the key it writes is not a legal field key.
+   */
+  const rowsWithAvatars = useMemo(
+    () => rows.map((row) => ({ ...row, [DEMO_AVATAR_ROW_KEY]: demoAvatarFor(row.id) })),
+    [rows],
+  );
+
   return (
     <DataTable<TableRow>
       columns={columns}
-      rows={rows}
+      rows={rowsWithAvatars}
       rowKey={(row) => row.id}
       renderCell={(column, row) =>
         renderFieldCell({
@@ -87,6 +122,7 @@ export function RecordTable({
       loading={loading}
       {...(sort ? { sort } : {})}
       {...(onSortColumn ? { onSortColumn } : {})}
+      {...(onFilterColumn ? { onFilterColumn } : {})}
       {...(selection ? { selection } : {})}
     />
   );

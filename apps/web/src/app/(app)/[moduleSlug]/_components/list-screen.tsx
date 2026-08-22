@@ -22,6 +22,7 @@ import {
   buildListHref,
   encodeFilterHash,
   readFilterHash,
+  NO_VIEW,
   type ListQuery,
   type ListQueryLimits,
 } from './list-query';
@@ -29,7 +30,7 @@ import { ListToolbar } from './list-toolbar';
 import { Pagination } from './pagination';
 import { RecordTable, type TableRow } from './record-table';
 import { ReviewQueueOverlay } from './review-queue-overlay';
-import { SaveViewOverlay } from './save-view-overlay';
+import { DeleteViewPopup, RenameViewPopup, SaveViewPopup } from './saved-view-popups';
 
 /**
  * The list body: the rail, the toolbar, the table and the pager, and the one
@@ -141,7 +142,23 @@ export function ListScreen({
   const [fetching, setFetching] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /**
+   * The saved view whose name is being edited, or whose deletion is being
+   * confirmed. Held as the WHOLE view rather than an id so the pop-up opens on
+   * the name it is about to change — an id would make it fetch, and the rail
+   * already has every field either dialog needs.
+   */
+  const [renaming, setRenaming] = useState<RailView | null>(null);
+  const [deleting, setDeleting] = useState<RailView | null>(null);
   const [focusToken, setFocusToken] = useState(0);
+  /**
+   * Which field the rail should open on when `focusToken` next changes. The
+   * toolbar's Filter button focuses the group as a whole (null); a column
+   * header's `oui:filter` funnel names its own field, so the rail can tick
+   * that row and land the caret in its value input. Kept beside the token
+   * rather than inside it so a re-focus of the same field still fires.
+   */
+  const [focusField, setFocusField] = useState<string | null>(null);
 
   /** Ticked row ids. Page-scoped — see the effect that clears it. */
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
@@ -477,7 +494,54 @@ export function ListScreen({
     router.refresh();
   }
 
+  /**
+   * A rename changes the LABEL and nothing else — not the applied view, not
+   * the query, not the rows. So the URL is left exactly as it is and only the
+   * server render is re-run, which is what repaints the rail and the picker.
+   */
+  function onRenamed() {
+    setRenaming(null);
+    router.refresh();
+  }
+
+  /**
+   * A delete DOES change the query when the deleted view is the one in effect:
+   * leaving `?view=<id>` in the URL would make the page report "That saved
+   * view is no longer available" about a view the user just deleted on
+   * purpose. So the applied view is dropped in that case and kept in every
+   * other — deleting an unapplied view must not move the list underneath the
+   * reader.
+   */
+  function onDeleted(viewId: string) {
+    setDeleting(null);
+    if (appliedView?.id === viewId) {
+      // `none`, not "no parameter": an absent `?view=` means "the module's
+      // default", and the deleted one may have BEEN the default.
+      router.push(href({ view: NO_VIEW, filtered: false, sort: null, page: 1 }), { scroll: false });
+    }
+    router.refresh();
+  }
+
   /** The column set as a view stores it, for Save Filter. */
+  /**
+   * The columns, each told whether the rail can filter on it.
+   *
+   * The file draws `oui:filter` in every header cell, but its columns are all
+   * ordinary fields. Ours are `FieldDefinition` rows, and a type with no
+   * operators in the registry (`FIELD_TYPE_SPECS[type].operators`) never
+   * reaches the rail — so a funnel over it would open a rail row that is not
+   * there. `filterable: false` is what stops `DataTable` drawing one, keeping
+   * the header honest rather than complete.
+   */
+  const filterableKeys = useMemo(
+    () => new Set(filterFields.map((f) => f.key)),
+    [filterFields],
+  );
+  const tableColumns = useMemo(
+    () => columns.map((c) => ({ ...c, filterable: filterableKeys.has(c.key) })),
+    [columns, filterableKeys],
+  );
+
   const columnSpecs: ColumnSpec[] = columns.map((column, order) => ({
     fieldKey: column.key,
     order,
@@ -509,7 +573,10 @@ export function ListScreen({
           onClear={clearFilter}
           onSaveOpen={() => setSaving(true)}
           onApplyView={applyView}
+          onRenameView={setRenaming}
+          onDeleteView={setDeleting}
           focusToken={focusToken}
+          {...(focusField === null ? {} : { focusFieldKey: focusField })}
           // Remount when the APPLIED filter changes underneath the rail — a
           // view being chosen, a link being opened, the back button. The rail
           // holds a draft, and a draft has to be re-seeded, not merged.
@@ -533,7 +600,10 @@ export function ListScreen({
               go({ sort: { fieldKey: sortKey, direction }, page: 1 });
             }}
             filterCount={rail.drafts.length}
-            onFocusFilters={() => setFocusToken((n) => n + 1)}
+            onFocusFilters={() => {
+              setFocusField(null);
+              setFocusToken((n) => n + 1);
+            }}
             pageSize={query.size}
             pageSizes={pageSizes}
             onChangePageSize={(size) => go({ size, page: 1 })}
@@ -612,7 +682,7 @@ export function ListScreen({
             <>
           <RecordTable
             slug={slug}
-            columns={columns}
+            columns={tableColumns}
             fields={cellFields}
             statuses={statuses}
             rows={visibleRows}
@@ -621,6 +691,16 @@ export function ListScreen({
               ? {}
               : { sort: { key: activeSort.fieldKey, direction: activeSort.direction } })}
             onSortColumn={sortBy}
+            // The file's per-column funnel. It does not open a second filter
+            // surface: the rail IS the filter UI and stays on screen, so the
+            // funnel ticks that field's row there and focuses it. Only columns
+            // the rail can actually filter on get one — a funnel over a field
+            // with no operators would be a dead affordance.
+            onFilterColumn={(key) => {
+              if (!filterFields.some((f) => f.key === key)) return;
+              setFocusField(key);
+              setFocusToken((n) => n + 1);
+            }}
             userNames={names}
             {...(selection === null ? {} : { selection })}
             emptyMessage={
@@ -673,8 +753,13 @@ export function ListScreen({
         />
       ) : null}
 
+      {/* The three centred pop-ups the file draws, all 511 wide. They are
+          rendered here rather than inside the rail because two of them can be
+          opened from more than one place — Save Filter from the rail's footer
+          and (later) from the toolbar — and a dialog owned by a collapsible
+          group would close with it. */}
       {saving ? (
-        <SaveViewOverlay
+        <SaveViewPopup
           slug={slug}
           labelPlural={labelPlural}
           filters={filter?.node ?? appliedView?.filters ?? null}
@@ -683,6 +768,29 @@ export function ListScreen({
           canShare={canShareViews}
           onSaved={onSaved}
           onClose={() => setSaving(false)}
+        />
+      ) : null}
+
+      {renaming !== null ? (
+        <RenameViewPopup
+          slug={slug}
+          view={{ id: renaming.id, name: renaming.name }}
+          onRenamed={onRenamed}
+          onClose={() => setRenaming(null)}
+        />
+      ) : null}
+
+      {deleting !== null ? (
+        <DeleteViewPopup
+          slug={slug}
+          view={{
+            id: deleting.id,
+            name: deleting.name,
+            isShared: deleting.isShared,
+            isDefault: deleting.isDefault,
+          }}
+          onDeleted={onDeleted}
+          onClose={() => setDeleting(null)}
         />
       ) : null}
     </>

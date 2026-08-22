@@ -13,8 +13,7 @@ import {
   type ImportMapping,
   type ImportPatchInput,
 } from '@crm/shared';
-import { FullScreenOverlay } from '@/components/overlay/full-screen-overlay';
-import { Button } from '@/components/ui';
+import { PopupFooter } from '@/components/ui';
 import { api } from '@/lib/client-api';
 import { requiredGaps } from './mapping';
 import { ImportRun } from './import-run';
@@ -92,7 +91,6 @@ export interface ImportWizardProps {
   /** this module's rows carry an owner at all — decides whether stage 5 has
    *  anything to ask */
   hasOwner: boolean;
-  onClose: () => void;
 }
 
 export function ImportWizard({
@@ -100,9 +98,16 @@ export function ImportWizard({
   labelPlural,
   systemColumns,
   hasOwner,
-  onClose,
 }: ImportWizardProps) {
   const router = useRouter();
+
+  /**
+   * Leaving the wizard is a NAVIGATION now, not closing an overlay. Back to
+   * the module's list, which is where the imported rows land — and the reason
+   * `router.refresh()` runs first everywhere below: that list was rendered on
+   * the server before this import existed.
+   */
+  const leave = () => router.push(`/${slug}`);
   const trackPrefix = `${slug}.import`;
 
   const [stage, setStage] = useState<number>(UPLOAD);
@@ -380,13 +385,33 @@ export function ImportWizard({
 
   const isLast = stage === ASSIGN;
 
+  /**
+   * The panel's own title, measured at @296,176 (the panel's 24px inset) and
+   * Medium 18px #111827. The file gives stage 1 "Upload the Leads" and stage 2
+   * "How should the records in this field be peocessed" — the typo is the
+   * file's, alongside "Fileld Mapping" and "Brouse Files", and a design file's
+   * typo is not a specification. Stages 3–5 are titled from their stage name,
+   * which is what the file's own chips call them.
+   */
+  const PANEL_TITLES: readonly string[] = [
+    `Upload the ${labelPlural}`,
+    'How should the records in this field be processed',
+    'Module-File Mapping',
+    'Field Mapping',
+    'Assignment Rules',
+  ];
+
   return (
-    <FullScreenOverlay
-      title={`Import ${labelPlural}`}
-      onClose={onClose}
-      trackPrefix={trackPrefix}
-    >
-      <div className="flex min-h-full flex-col">
+    // THE PAGE, not an overlay. The shell's sidebar and top bar stay put; this
+    // is only what sits under them. `-m-4` cancels `main`'s 16px inset for the
+    // toolbar strip and panel, which the file positions against the CONTENT
+    // COLUMN's edge (x=272 of 1440 = 256 + 16) rather than against a page
+    // gutter — then each child re-applies the 16 itself.
+    <div className="flex flex-col">
+      {/* `Rectangle 5` — @272,84 1152x56, #ffffff, r:12. y=84 is 16 below the
+          top bar's 68, which is `main`'s own padding, so this needs no offset
+          of its own. It is the positioning context for the chips. */}
+      <div className="h-[56px] w-[1152px] max-w-full rounded-xl bg-surface">
         <StageStrip
           stages={STAGES}
           current={run === null ? stage : ASSIGN}
@@ -395,7 +420,14 @@ export function ImportWizard({
           trackPrefix={trackPrefix}
           frozen={run !== null}
         />
+      </div>
 
+      {/* The CONTENT PANEL — `Pop up` @272,152, 1152 wide, #ffffff, r:12,
+          flex-col gap:24 pad:24. Its HEIGHT is content-driven: the file draws
+          this same frame at 289, 351, 386, 420, 497, 510 and 516 across the
+          twenty-four import frames, so only the width is fixed. y=152 is
+          84 + 56 (the toolbar) + 12. */}
+      <div className="mt-3 flex w-[1152px] max-w-full flex-col gap-6 rounded-xl bg-surface p-6">
         {run !== null ? (
           <ImportRun
             slug={slug}
@@ -406,17 +438,26 @@ export function ImportWizard({
             // far, rather than the list as it was before the import started.
             onClose={() => {
               router.refresh();
-              onClose();
+              leave();
             }}
-            // The list behind this overlay is now stale — it was rendered on
-            // the server before these records existed.
+            // The list this returns to is now stale — it was rendered on the
+            // server before these records existed.
             onImported={() => router.refresh()}
             trackPrefix={trackPrefix}
           />
         ) : (
           <>
-            <div className="flex-1 px-8 py-6">
-              <div className="mx-auto max-w-6xl">
+            {/* Title 1104x22 (the panel's 1152 less its 24 padding each side),
+                Medium 18px #111827 — the same row the 511 pop-ups draw. */}
+            <h2 className="truncate text-lg font-medium text-heading">
+              {PANEL_TITLES[stage]}
+            </h2>
+            {/* Separator @296,222 — 1px #e5e7eb across the inner 1104. */}
+            <div className="h-px shrink-0 bg-border" aria-hidden="true" />
+
+            {/* Content — flex-col gap:20. */}
+            <div className="flex flex-col gap-5">
+              <div>
                 {error !== null ? (
                   <p
                     role="alert"
@@ -472,6 +513,7 @@ export function ImportWizard({
 
                 {stage === FIELD_MAPPING && staged !== null ? (
                   <StageFieldMapping
+                    slug={slug}
                     labelPlural={labelPlural}
                     staged={staged}
                     catalogue={catalogue}
@@ -496,42 +538,38 @@ export function ImportWizard({
               </div>
             </div>
 
-            {/* Previous · Next · Cancel, on every stage, as the file draws it.
-                Sticky rather than pinned to the viewport: the overlay body is
-                the scroll container, so the footer stays put while a
-                250-column mapping table scrolls past it. */}
-            <footer className="sticky bottom-0 flex flex-wrap items-center gap-3 border-t border-border bg-surface px-8 py-4">
-              <span className="mr-auto text-xs text-body">
-                {isLast
-                  ? 'Nothing is written until you press Import. From then on the work runs in the background.'
-                  : `Stage ${stage + 1} of ${STAGES.length} · nothing has been written yet.`}
-              </span>
-              <Button
-                variant="secondary"
-                disabled={stage === UPLOAD || busy}
-                onClick={() => goTo(stage - 1)}
-                data-track={`${trackPrefix}.previous`}
-              >
-                Previous
-              </Button>
-              <Button
-                variant="primary"
-                loading={busy}
-                disabled={blockerFor(stage) !== null}
-                // A disabled control with no explanation reads as a broken one.
-                title={blockerFor(stage) ?? undefined}
-                onClick={() => void goNext()}
-                data-track={isLast ? `${trackPrefix}.commit.click` : `${trackPrefix}.next`}
-              >
-                {isLast ? `Import ${labelPlural}` : 'Next'}
-              </Button>
-              <Button variant="ghost" onClick={onClose} data-track={`${trackPrefix}.cancel`}>
-                Cancel
-              </Button>
-            </footer>
+            <p className="text-xs text-body">
+              {isLast
+                ? 'Nothing is written until you press Import. From then on the work runs in the background.'
+                : `Stage ${stage + 1} of ${STAGES.length} · nothing has been written yet.`}
+            </p>
+
+            {/* Separator @296,573 — the 1152 panel draws a SECOND rule above
+                its footer, which the 511 pop-ups do not. See the
+                FOOTER_SEPARATOR table in components/ui/popup.tsx. */}
+            <div className="h-px shrink-0 bg-border" aria-hidden="true" />
+
+            {/* `Frame 482702` 1104x40, flex-row gap:18 — three 222x40 buttons
+                right-aligned at x = 402, 642, 882 within 1104, in the file's
+                own order: Cancel, then Previous, then Next. `PopupFooter` owns
+                every one of those numbers, so this screen states none of them. */}
+            <PopupFooter
+              trackPrefix={trackPrefix}
+              cancel={{ label: 'Cancel', onClick: leave }}
+              previous={{
+                label: 'Previous',
+                onClick: () => goTo(stage - 1),
+                disabled: stage === UPLOAD || busy,
+              }}
+              next={{
+                label: isLast ? `Import ${labelPlural}` : 'Next',
+                onClick: () => void goNext(),
+                disabled: busy || blockerFor(stage) !== null,
+              }}
+            />
           </>
         )}
       </div>
-    </FullScreenOverlay>
+    </div>
   );
 }

@@ -3,9 +3,14 @@
 import { createContext, useContext, useEffect, useMemo, useRef } from 'react';
 
 /**
- * One stack for every full-screen overlay in the app. The stack — not each
- * overlay — owns the two global side effects, because with nested overlays
- * neither can be decided locally:
+ * One stack for every dismissable surface in the app — full-screen overlays
+ * AND the centred pop-ups the Figma file draws (components/ui/popup.tsx). They
+ * share this stack rather than each keeping their own, because a pop-up opened
+ * OVER an overlay has to close first, and two stacks cannot agree on which
+ * surface is on top.
+ *
+ * The stack — not each surface — owns the two global side effects, because
+ * with nesting neither can be decided locally:
  *
  *  - the body scroll lock (`body[data-overlay-open]`, read by globals.css)
  *    must hold until the LAST overlay closes, not flicker off when a nested
@@ -70,7 +75,9 @@ export function useOverlayStack(): OverlayStack {
   const ctx = useContext(OverlayContext);
   if (!ctx) {
     throw new Error(
-      'FullScreenOverlay must render inside <OverlayProvider> — it is mounted by the app shell layout.',
+      'FullScreenOverlay and Popup must render inside <OverlayProvider> — it is mounted by the ' +
+        'app shell layout. Both share ONE stack, which is what makes Escape close only the top ' +
+        'surface and the scroll lock survive until the last one closes.',
     );
   }
   return ctx;

@@ -79,8 +79,23 @@ export interface FilterPanelProps {
   onClear: () => void;
   onSaveOpen: () => void;
   onApplyView: (viewId: string) => void;
+  /**
+   * The two actions the file's own row menu offers — measured on
+   * `…_Saved filter Edit`, where a saved-filter row carries a
+   * `ph:dots-three-vertical-bold` 16x16 that opens a 98x32 `Drop Down` of
+   * exactly "Rename" and "Delete". The rail RAISES them; the pop-ups that
+   * perform them live with the screen that owns the view list.
+   */
+  onRenameView: (view: RailView) => void;
+  onDeleteView: (view: RailView) => void;
   /** bumped by the toolbar's Filter button to bring the rail into focus */
   focusToken: number;
+  /**
+   * The field the rail should open on, when the focus came from a column
+   * header's `oui:filter` funnel rather than the toolbar's Filter button.
+   * Absent, the group as a whole takes focus, which is the toolbar's meaning.
+   */
+  focusFieldKey?: string;
 }
 
 /**
@@ -116,7 +131,10 @@ export function FilterPanel({
   onClear,
   onSaveOpen,
   onApplyView,
+  onRenameView,
+  onDeleteView,
   focusToken,
+  focusFieldKey,
 }: FilterPanelProps) {
   // Keyed by field key: the rail is a list of fields, so one row per field is
   // the only arrangement it can draw. A second condition on the same field is
@@ -156,15 +174,60 @@ export function FilterPanel({
   // a second filter surface — the rail IS the filter UI, and the design keeps
   // it on screen. Token rather than a callback ref so the parent needs to know
   // nothing about the rail's internals.
+  /**
+   * The row a funnel asked for, waiting to be focused.
+   *
+   * Two effects, not one, and that split is the whole point: ticking the field
+   * CREATES its condition row, and the row does not exist until React has
+   * committed that state. Focusing in the same effect (or a frame later) races
+   * the commit and lands on the group's first input, or on nothing at all —
+   * which is exactly what it did. So the first effect records the intent and
+   * the second one acts on it once the row is actually in the DOM.
+   */
+  const [pendingFocus, setPendingFocus] = useState<string | null>(null);
+
   useEffect(() => {
     if (focusToken === 0) return;
     setCollapsed((prev) => ({ ...prev, fields: false }));
+    // A funnel names its field, so TICK that row — an untouched field has no
+    // value control to land in.
+    if (focusFieldKey !== undefined) {
+      const field = fieldByKey.get(focusFieldKey);
+      if (field !== undefined) {
+        setDrafts((prev) =>
+          prev[field.key] !== undefined
+            ? prev
+            : { ...prev, [field.key]: newDraft(field.key, field.type) },
+        );
+      }
+    }
+    setPendingFocus(focusFieldKey ?? '');
+    // `fieldByKey` is stable per field list and deliberately not a dependency:
+    // re-running this on an unrelated re-render would yank focus back.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusToken]);
+
+  useEffect(() => {
+    if (pendingFocus === null) return;
     const group = fieldsGroupRef.current;
     if (!group) return;
-    group.scrollIntoView({ block: 'nearest' });
-    const first = group.querySelector<HTMLElement>('input, select');
-    first?.focus();
-  }, [focusToken]);
+    // '' is the toolbar's meaning: the group as a whole, no particular field.
+    const scope =
+      pendingFocus === ''
+        ? group
+        : group.querySelector<HTMLElement>(`[data-field-key="${CSS.escape(pendingFocus)}"]`);
+    // The row has not rendered yet — stay pending and try again on the commit
+    // that brings it in, rather than giving up and focusing the wrong thing.
+    if (scope === null) return;
+    scope.scrollIntoView({ block: 'nearest' });
+    // Skip the field's own toggle checkbox and land on the VALUE control —
+    // focusing the toggle would put Space on "untick the thing you just asked
+    // to filter by".
+    const controls = [...scope.querySelectorAll<HTMLElement>('input, select')];
+    const value = controls.find((el) => el.getAttribute('type') !== 'checkbox');
+    (value ?? controls[0])?.focus();
+    setPendingFocus(null);
+  }, [pendingFocus, drafts]);
 
   function toggleField(field: FilterField, on: boolean) {
     setDrafts((prev) => {
@@ -211,7 +274,7 @@ export function FilterPanel({
               {fields.map((field) => {
                 const draft = drafts[field.key];
                 return (
-                  <li key={field.key}>
+                  <li key={field.key} data-field-key={field.key}>
                     <label
                       className="flex cursor-pointer items-center gap-2 text-xs text-body"
                       title={field.label}
@@ -274,6 +337,8 @@ export function FilterPanel({
           views={views}
           appliedViewId={appliedViewId}
           onApplyView={onApplyView}
+          onRenameView={onRenameView}
+          onDeleteView={onDeleteView}
         />
       ),
     },
@@ -281,7 +346,7 @@ export function FilterPanel({
 
   return (
     // shrink-0 so a wide table can never squeeze the rail below its 230px.
-    <Panel className="flex w-filters shrink-0 flex-col overflow-hidden">
+    <Panel className="flex w-filters shrink-0 flex-col overflow-hidden" id={`filter-rail-${slug}`}>
       {/* 12px padding, not the panel default of 24: at 230px wide the standard
           padding would leave 182px for a field label, and these truncate. */}
       <div className="flex min-h-0 flex-1 flex-col p-3">
@@ -374,6 +439,119 @@ function Note({ children }: { children: ReactNode }) {
 }
 
 /**
+ * `ph:dots-three-vertical-bold`, measured 16x16 on the saved-filter row.
+ *
+ * Traced here rather than added to `./icons.tsx` on purpose: this is the only
+ * screen that draws it, and that file is shared with the import wizard, which
+ * another slice is editing concurrently. It moves into `icons.tsx` the moment
+ * a second caller wants it.
+ */
+function KebabIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" className="shrink-0">
+      {/* Bold, per the icon's own name — filled dots rather than strokes. */}
+      <g fill="currentColor">
+        <circle cx="12" cy="5" r="2" />
+        <circle cx="12" cy="12" r="2" />
+        <circle cx="12" cy="19" r="2" />
+      </g>
+    </svg>
+  );
+}
+
+/**
+ * The row menu the kebab opens: "Rename" then "Delete", in that order.
+ *
+ * Measured on `…_Saved filter Edit` as `Group 3` @388,236 — 98x32, two 98x16
+ * `Drop Down` rows, the resting one `bg #ffffff` with `#6b7280` text and the
+ * hovered one `bg #f6f8fa` with `#111827`. Those two fills and the two text
+ * colours are used verbatim below (`surface`/`background`, `body`/`heading`).
+ *
+ * The 16px rows and 6px text are NOT: the whole dropdown is drawn at a reduced
+ * scale in that frame — 6px is below every step the type scale defines and
+ * below the 10px the same file uses for the Sort menu's rows. So this follows
+ * the Sort menu's measured 28px row and 10px text (`text-overline`), which is
+ * the nearest real step and the precedent `sort-menu.tsx` already documents.
+ */
+function ViewRowMenu({
+  slug,
+  viewName,
+  onRename,
+  onDelete,
+  onClose,
+}: {
+  slug: string;
+  viewName: string;
+  onRename: () => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // pointerdown, not click: a click that lands on another control should
+    // close this and still reach that control, which a click-phase close on
+    // the document would swallow. Same handling as `SortMenu`.
+    function onPointerDown(e: PointerEvent) {
+      if (e.target instanceof Node && ref.current?.contains(e.target)) return;
+      onClose();
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [onClose]);
+
+  useEffect(() => {
+    ref.current?.querySelector<HTMLElement>('button')?.focus();
+  }, []);
+
+  const ROW =
+    'flex h-7 w-full items-center px-3 text-left text-overline ' +
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary';
+
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      aria-label={`Actions for ${viewName}`}
+      // right-0: the kebab is flush right of a 230px rail, so the menu hangs
+      // from that edge or it leaves the panel. overflow-hidden gives the rows
+      // the container's corners, which is how the file draws them.
+      className="absolute right-0 top-full z-40 mt-1 w-[98px] overflow-hidden rounded border border-border bg-surface"
+    >
+      <button
+        type="button"
+        role="menuitem"
+        onClick={onRename}
+        data-track={`${slug}.view.rename.open`}
+        className={`${ROW} text-body hover:bg-background hover:text-heading`}
+      >
+        Rename
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={onDelete}
+        data-track={`${slug}.view.delete.open`}
+        // The file paints this row's label `#111827` (it is drawn hovered).
+        // It stays a neutral row rather than turning red: the destructive
+        // colour belongs on the confirmation's Delete button, which is where
+        // the file puts `#ef4444`.
+        className={`${ROW} text-body hover:bg-background hover:text-heading`}
+      >
+        Delete
+      </button>
+    </div>
+  );
+}
+
+/**
  * The saved-view list, with live match counts.
  *
  * The counts are fetched FROM THE CLIENT, after the list has already painted,
@@ -392,14 +570,20 @@ function SavedFilters({
   views,
   appliedViewId,
   onApplyView,
+  onRenameView,
+  onDeleteView,
 }: {
   slug: string;
   views: RailView[];
   appliedViewId: string | null;
   onApplyView: (viewId: string) => void;
+  onRenameView: (view: RailView) => void;
+  onDeleteView: (view: RailView) => void;
 }) {
   const [counts, setCounts] = useState<Record<string, number> | null>(null);
   const [countsFailed, setCountsFailed] = useState(false);
+  /** id of the view whose row menu is open — at most one at a time. */
+  const [menuFor, setMenuFor] = useState<string | null>(null);
 
   useEffect(() => {
     if (views.length === 0) return;
@@ -430,36 +614,102 @@ function SavedFilters({
       <ul className="flex flex-col gap-1">
         {views.map((view) => {
           const count = counts?.[view.id];
+          /**
+           * The row menu, measured on `…_Saved filter Edit`: the saved-filter
+           * row there (`Frame 482702`, 206x20, `bg #f6f8fa`) ends in a
+           * `ph:dots-three-vertical-bold` 16x16 at x=470 of 284..490 — flush
+           * right — and it opens a 98x32 `Drop Down` of two rows, "Rename"
+           * then "Delete".
+           *
+           * Drawn only for a view this actor OWNS. `SavedViewDto.isOwn` is the
+           * same fact `lib/config/views.ts` gates the write on ("Only the
+           * owner of a view can delete it"), so a menu on someone else's view
+           * would be two items that always 403. Publishing and role defaults
+           * need the layout permission on top of that — the API asserts it and
+           * the delete pop-up warns about it, rather than this rail
+           * re-deriving a permission rule.
+           *
+           * Deliberately NOT gated on `isValid`. A view whose stored spec no
+           * longer parses cannot be APPLIED, and the kebab is then the only
+           * way to rename or remove it — which is exactly what `SavedViewDto`
+           * says such a view is listed for. Disabling the menu alongside the
+           * row would leave a broken view on the rail with no way to clear it.
+           */
+          const canManage = view.isOwn;
+          const menuOpen = menuFor === view.id;
           return (
-            <li key={view.id}>
-              <button
-                type="button"
-                disabled={!view.isValid}
-                aria-current={view.id === appliedViewId ? 'true' : undefined}
-                title={
-                  view.isValid
-                    ? `${view.name}${view.isShared ? ' — shared' : ''}${view.isDefault ? ' — default' : ''}`
-                    : `${view.name} — this view references a field that no longer exists, so it cannot be applied.`
-                }
-                onClick={() => onApplyView(view.id)}
-                data-track={`${slug}.view.select`}
+            <li key={view.id} className="relative">
+              {/* The row is a flex of TWO buttons, not one: a kebab nested
+                  inside the apply button would be a button inside a button,
+                  which no browser renders and no screen reader can announce. */}
+              <div
                 className={
-                  'flex w-full items-center gap-2 rounded px-1 py-1 text-left text-xs ' +
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ' +
-                  'disabled:cursor-not-allowed disabled:opacity-60 ' +
-                  (view.id === appliedViewId
-                    ? 'bg-background font-medium text-heading'
-                    : 'text-body hover:bg-background')
+                  'flex items-center gap-1 rounded px-1 ' +
+                  (view.id === appliedViewId ? 'bg-background' : 'hover:bg-background')
                 }
               >
-                <span className="min-w-0 flex-1 truncate">{view.name}</span>
-                {view.isShared ? (
-                  <span className="shrink-0 text-overline uppercase text-muted">Shared</span>
+                <button
+                  type="button"
+                  disabled={!view.isValid}
+                  aria-current={view.id === appliedViewId ? 'true' : undefined}
+                  title={
+                    view.isValid
+                      ? `${view.name}${view.isShared ? ' — shared' : ''}${view.isDefault ? ' — default' : ''}`
+                      : `${view.name} — this view references a field that no longer exists, so it cannot be applied.`
+                  }
+                  onClick={() => onApplyView(view.id)}
+                  data-track={`${slug}.view.select`}
+                  className={
+                    'flex min-w-0 flex-1 items-center gap-2 py-1 text-left text-xs ' +
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ' +
+                    'disabled:cursor-not-allowed disabled:opacity-60 ' +
+                    (view.id === appliedViewId ? 'font-medium text-heading' : 'text-body')
+                  }
+                >
+                  <span className="min-w-0 flex-1 truncate">{view.name}</span>
+                  {view.isShared ? (
+                    <span className="shrink-0 text-overline uppercase text-muted">Shared</span>
+                  ) : null}
+                  {count !== undefined ? (
+                    <span className="shrink-0 tabular-nums text-muted">{count}</span>
+                  ) : null}
+                </button>
+
+                {canManage ? (
+                  <button
+                    type="button"
+                    aria-haspopup="menu"
+                    aria-expanded={menuOpen}
+                    // Icon-only, and there is one per row: the view's own name
+                    // is the only thing that tells two of them apart.
+                    aria-label={`Actions for ${view.name}`}
+                    onClick={() => setMenuFor(menuOpen ? null : view.id)}
+                    data-track={`${slug}.view.actions.open`}
+                    className={
+                      'flex shrink-0 items-center rounded p-0.5 text-body hover:text-heading ' +
+                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary'
+                    }
+                  >
+                    <KebabIcon />
+                  </button>
                 ) : null}
-                {count !== undefined ? (
-                  <span className="shrink-0 tabular-nums text-muted">{count}</span>
-                ) : null}
-              </button>
+              </div>
+
+              {menuOpen ? (
+                <ViewRowMenu
+                  slug={slug}
+                  viewName={view.name}
+                  onRename={() => {
+                    setMenuFor(null);
+                    onRenameView(view);
+                  }}
+                  onDelete={() => {
+                    setMenuFor(null);
+                    onDeleteView(view);
+                  }}
+                  onClose={() => setMenuFor(null)}
+                />
+              ) : null}
             </li>
           );
         })}

@@ -11,6 +11,7 @@ import {
 } from '@crm/shared';
 import { Button, Input, Select } from '@/components/ui';
 import { claimedFields, isMapped, patchColumn, requiredGaps, sampleValues } from './mapping';
+import { AutoMappingPopup, CreateFieldsPopup, DefaultValuePopup } from './import-dialogs';
 import { TabStrip, type CountedTab } from './stage-strip';
 import type { ModuleField, StagedImportWire } from './wire';
 
@@ -33,6 +34,8 @@ import type { ModuleField, StagedImportWire } from './wire';
  */
 
 export interface StageFieldMappingProps {
+  /** module slug — the Create New Fields dialog POSTs to this module's fields */
+  slug: string;
   labelPlural: string;
   staged: StagedImportWire;
   /** the importable, permitted fields of this module, in the Admin's order */
@@ -57,6 +60,7 @@ function stateOf(column: ImportColumnMapping): 'mapped' | 'skipped' | 'unmapped'
 }
 
 export function StageFieldMapping({
+  slug,
   labelPlural,
   staged,
   catalogue,
@@ -68,6 +72,9 @@ export function StageFieldMapping({
   trackPrefix,
 }: StageFieldMappingProps) {
   const [tab, setTab] = useState('all');
+  /** which sub-dialog is open, or null. One at a time: the file draws each of
+   *  them alone over the stage, and `Popup` stacks anyway if that ever changes. */
+  const [dialog, setDialog] = useState<'automap' | 'default' | 'createfields' | null>(null);
 
   const byKey = new Map(catalogue.map((f) => [f.key, f]));
   const claimed = claimedFields(mapping);
@@ -132,18 +139,78 @@ export function StageFieldMapping({
             simply not imported — it is not an error, and the counts above say how many there are.
           </p>
         </div>
-        <Button
-          variant="secondary"
+        {/* The three actions the file puts on this stage: "Auto Map" on the
+            stage itself, and "Create New Fields" / "Assign Default Value",
+            which appear by name in every Import frame's text. Each opens the
+            pop-up measured for it — see ./import-dialogs.tsx. */}
+        <div className="flex shrink-0 flex-wrap items-center gap-3">
+          <Button
+            variant="secondary"
+            onClick={() => setDialog('automap')}
+            data-track={`${trackPrefix}.automap.click`}
+          >
+            Auto Map
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => setDialog('createfields')}
+            data-track={`${trackPrefix}.createfields.open`}
+          >
+            Create New Fields
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => setDialog('default')}
+            data-track={`${trackPrefix}.default.open`}
+          >
+            Assign Default Value
+          </Button>
+        </div>
+      </div>
+
+      <AutoMappingPopup
+        open={dialog === 'automap'}
+        onCancel={() => setDialog(null)}
+        onApply={() => {
           // Replays the mapping the server computed on upload rather than
           // re-deriving it here: `autoMap` is pure and its answer must be the
           // same in the request and in the browser, so there is no second
           // implementation to disagree with.
-          onClick={() => onMapping(staged.suggestedMapping)}
-          data-track={`${trackPrefix}.automap.click`}
-        >
-          Auto Map
-        </Button>
-      </div>
+          onMapping(staged.suggestedMapping);
+          setDialog(null);
+        }}
+        trackPrefix={trackPrefix}
+      />
+
+      <DefaultValuePopup
+        open={dialog === 'default'}
+        columns={mapping.columns.map((c) => ({ column: c.column, field: c.field }))}
+        catalogue={catalogue}
+        onCancel={() => setDialog(null)}
+        onSave={(column, value) => {
+          onMapping(patchColumn(mapping, column, { defaultValue: value === '' ? null : value }));
+          setDialog(null);
+        }}
+        trackPrefix={trackPrefix}
+      />
+
+      <CreateFieldsPopup
+        open={dialog === 'createfields'}
+        slug={slug}
+        staged={staged}
+        unmappedColumns={mapping.columns.filter((c) => c.field === null && !c.skip).map((c) => c.column)}
+        onCancel={() => setDialog(null)}
+        onCreated={(created) => {
+          // Point each column at the field it just produced, in ONE update —
+          // a patch per column would make every intermediate mapping a render
+          // and could interleave with the user editing the table.
+          let next = mapping;
+          for (const { column, key } of created) next = patchColumn(next, column, { field: key });
+          onMapping(next);
+          setDialog(null);
+        }}
+        trackPrefix={trackPrefix}
+      />
 
       <TabStrip
         tabs={tabs}

@@ -6,10 +6,18 @@ import { Button } from '@/components/ui';
 import { useOverlayStack } from './overlay-context';
 
 /**
- * THE overlay in this product. Every create/edit form, builder and review
- * queue opens through this component, full screen — there are no small modal
- * windows anywhere (spec + CLAUDE.md, UI rules). Escape and the scroll lock
- * live in OverlayProvider so they behave correctly when overlays nest.
+ * The FULL-SCREEN overlay: the big authoring surfaces the Figma file does not
+ * draw — the record form, field builder, layout editor, roles matrix and
+ * review queue.
+ *
+ * It is no longer the only overlay. CLAUDE.md's UI rules were rewritten on
+ * 22 Aug 2026 ("Overlay sizes come from the file, not from a rule"), retiring
+ * the earlier "no small modals anywhere" line this comment used to cite: the
+ * file draws centred pop-ups at 511/1015/1152, and `components/ui/popup.tsx`
+ * builds them. Anything the file DOES draw belongs there, not here.
+ *
+ * Escape and the scroll lock live in OverlayProvider, one stack shared with
+ * Popup, so they behave correctly when the two nest.
  */
 interface FullScreenOverlayProps {
   title: string;

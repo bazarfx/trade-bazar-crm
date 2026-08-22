@@ -8,7 +8,10 @@ import { ConfigError } from '@/lib/config/service';
 import { listViews } from '@/lib/config/views';
 import { listRecords, storageFor } from '@/lib/records/list';
 import type { DataTableColumn } from '@/components/ui';
+import { DEMO_AVATAR_ROW_KEY } from '@/components/demo-avatar';
+import { PageTitle } from '@/components/shell/page-title';
 import { ListActions } from './_components/list-actions';
+import { FilterToggle } from './_components/filter-toggle';
 import { ListScreen } from './_components/list-screen';
 import { NO_VIEW, parseListQuery, type ListQueryLimits } from './_components/list-query';
 import { SearchBox } from './_components/search-box';
@@ -181,8 +184,13 @@ export default async function ModulePage({
     where: { slug: moduleSlug, isEnabled: true },
     // hasOwner comes along for the bulk reassign action: a module whose rows
     // are not owned has nothing to reassign, and the storage shape below has
-    // the other half of that answer.
-    select: { id: true, slug: true, label: true, labelPlural: true, isCore: true, hasOwner: true },
+    // the other half of that answer. `recordTitleField` names the field that
+    // IS the record's identity, which is the column the file draws a picture
+    // beside — see the column map below.
+    select: {
+      id: true, slug: true, label: true, labelPlural: true, isCore: true, hasOwner: true,
+      recordTitleField: true,
+    },
   });
   if (!mod) notFound();
 
@@ -346,6 +354,26 @@ export default async function ModulePage({
     // The first column is pinned so the row stays identifiable while the
     // overflow columns scroll out from under it.
     ...(i === 0 ? { pinned: 'left' as const } : {}),
+    /**
+     * The 24x24 `Display Picture` beside the record's title.
+     *
+     * Measured on the `CRM _ Leads` frame: only the FIRST cell of a row draws
+     * it — that cell is `Table / Base /  List` 200x45 holding "Arlene McCoy",
+     * the Lead Name — and every other column's instance of the node is
+     * `visible: false`. So it is a property of ONE column, which is why
+     * `DataTableColumn.avatarKey` is per-column rather than "column 0 gets a
+     * picture".
+     *
+     * Keyed off `ModuleDefinition.recordTitleField`, never off position: the
+     * picture belongs to the field that IS the record's identity, and a saved
+     * view is free to put that field third or leave it out entirely. Left out,
+     * no column claims the avatar and none is drawn — which is correct, since
+     * there is then no name for the face to sit beside.
+     *
+     * `DEMO_AVATAR_ROW_KEY` is filled in by `RecordTable`, not by the
+     * repository. See components/demo-avatar.ts.
+     */
+    ...(f.key === mod.recordTitleField ? { avatarKey: DEMO_AVATAR_ROW_KEY } : {}),
   }));
 
   const statusOptions: PickerOption[] = statusRows.map((s) => ({ value: s.id, label: s.name }));
@@ -371,8 +399,20 @@ export default async function ModulePage({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-title font-medium text-heading">{mod.labelPlural}</h1>
+      {/* The title is NOT drawn here. Measured: on every designed frame it is
+          a text node at @286,21, inside the top bar's 0…68 band — so the shell
+          draws it and this page only names it. See
+          components/shell/page-title.tsx. */}
+      <PageTitle title={mod.labelPlural} />
+      {/* THE TOOLBAR BAND — measured `Rectangle 5` @272,84: 1152x56, white,
+          1px #e5e7eb, radius 8. It is a band, not a bare row: the actions sit
+          INSIDE it, right-aligned and ending at x=1412 (Frame 482686 @1012 is
+          400 wide), with the rail's Filter toggle at its left edge @284.
+          Rendering the buttons in their own row above the panels — which is
+          what this did until now — was the visible mismatch the client
+          called out. */}
+      <div className="flex h-14 items-center justify-between rounded-md border border-border bg-surface px-3">
+        <FilterToggle slug={mod.slug} />
         <ListActions
           slug={mod.slug}
           label={mod.label}

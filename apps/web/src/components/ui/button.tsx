@@ -66,6 +66,23 @@ const VARIANT: Record<ButtonVariant, string> = {
   ghost: 'text-body hover:bg-subtle',
 };
 
+/**
+ * The same measured recipe, for the times the control is a LINK rather than a
+ * button — an action that is really a navigation (the list screen's Import,
+ * which now opens `/[moduleSlug]/import`) has to be an anchor so it can be
+ * middle-clicked, opened in a new tab and reached by the back button.
+ *
+ * Exported rather than duplicated: two places drawing "a secondary button"
+ * from two class strings is exactly how the 38px height drifts.
+ */
+export function buttonClass(
+  variant: ButtonVariant = 'primary',
+  size: ButtonSize = 'md',
+  className?: string,
+): string {
+  return cn(BASE, SIZE[size], VARIANT[variant], className);
+}
+
 /** Icon sizes in the fig are 14 / 16 / 20 per size; the spinner matches. */
 const SPINNER: Record<ButtonSize, string> = {
   sm: 'h-3.5 w-3.5',
