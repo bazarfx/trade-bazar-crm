@@ -5,8 +5,24 @@ import { z } from 'zod';
  * and any future CLI or worker task all agree on what a valid credential is.
  */
 
+/**
+ * The login identifier is an email OR a bare username. A username is the
+ * local part of the account's email — typing `admin` signs in as
+ * `admin@<LOGIN_DEFAULT_DOMAIN>`. The server does the expansion, so nothing
+ * invalid is ever stored in `User.email` and the unique index stays honest.
+ */
+const USERNAME = /^[a-z0-9._-]{1,64}$/;
+
 export const loginSchema = z.object({
-  email: z.string().trim().toLowerCase().email('Enter a valid email address'),
+  email: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .min(1, 'Enter your email or username')
+    .refine(
+      (v) => USERNAME.test(v) || z.string().email().safeParse(v).success,
+      'Enter a valid email address or username',
+    ),
   password: z.string().min(1, 'Enter your password'),
 });
 export type LoginInput = z.infer<typeof loginSchema>;

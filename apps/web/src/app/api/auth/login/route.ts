@@ -39,7 +39,13 @@ export async function POST(req: Request) {
     );
   }
 
-  const { email, password } = parsed.data;
+  const { password } = parsed.data;
+  // A bare username is the local part of the account email. Expanding it here
+  // (never in the client) keeps User.email a real address and keeps the
+  // "no such account" response identical to a wrong password.
+  const email = parsed.data.email.includes('@')
+    ? parsed.data.email
+    : `${parsed.data.email}@${process.env['LOGIN_DEFAULT_DOMAIN'] ?? 'tradebazar.local'}`;
   const limitKey = `login:${meta.ipAddress ?? 'unknown'}:${email}`;
   const limit = rateLimit(limitKey, MAX_ATTEMPTS, WINDOW_MS);
 

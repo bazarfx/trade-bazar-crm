@@ -41,10 +41,10 @@ export function LoginForm({ redirectTo }: { redirectTo: string }) {
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} noValidate>
-      <FieldLabel htmlFor="email">Email</FieldLabel>
+      <FieldLabel htmlFor="email">Email or username</FieldLabel>
       <Input
         id="email"
-        type="email"
+        type="text"
         autoComplete="username"
         autoFocus
         data-track="auth.login.email.input"
