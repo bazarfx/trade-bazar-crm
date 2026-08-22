@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState , type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { BulkAssignResult, ColumnSpec, FilterNode, SavedViewDto, SortSpec } from '@crm/shared';
@@ -53,6 +53,13 @@ import { DeleteViewPopup, RenameViewPopup, SaveViewPopup } from './saved-view-po
  * is the one thing this whole slice exists to prevent.
  */
 export interface ListScreenProps {
+  /**
+   * The search box, forwarded straight into the filter rail — the frame puts
+   * it at @284,190, inside the rail under its heading. It is a slot because
+   * the page already owns the query-string wiring; passing the element keeps
+   * that ownership rather than duplicating it here.
+   */
+  search?: ReactNode;
   slug: string;
   /** module.label — SINGULAR, for naming one row ("Select lead"). */
   label: string;
@@ -111,6 +118,7 @@ interface AppliedFilter {
 }
 
 export function ListScreen({
+  search,
   slug,
   label,
   labelPlural,
@@ -560,6 +568,7 @@ export function ListScreen({
           otherwise push the page past the fold. */}
       <div className="flex h-[calc(100vh-11.5rem)] items-stretch gap-6">
         <FilterPanel
+          search={search}
           slug={slug}
           labelPlural={labelPlural}
           fields={filterFields}

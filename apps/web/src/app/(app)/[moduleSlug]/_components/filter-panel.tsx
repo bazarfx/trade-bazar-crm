@@ -60,6 +60,14 @@ export interface FilterPanelProps {
   slug: string;
   /** module.labelPlural — the panel title is "Filter by {these}". */
   labelPlural: string;
+  /**
+   * The list search box, rendered directly under the heading.
+   *
+   * Measured @284,190 in the frame — INSIDE this rail, not in a row above the
+   * panels. It arrives as a slot rather than an import so the rail stays
+   * ignorant of the query string: the page owns that wiring already.
+   */
+  search?: ReactNode;
   fields: FilterField[];
   relatedModules: RelatedModule[];
   views: RailView[];
@@ -118,6 +126,7 @@ const RELATED_NOTE =
   'The modules that point at this one are listed; the join arrives with the related-records slice.';
 
 export function FilterPanel({
+  search,
   slug,
   labelPlural,
   fields,
@@ -353,6 +362,10 @@ export function FilterPanel({
         <h2 className="truncate text-sm font-medium text-heading" title={`Filter by ${labelPlural}`}>
           Filter by {labelPlural}
         </h2>
+
+        {/* @284,190 — 26px below the heading's top edge in the frame, which is
+            this 10px gap under a 16px line. */}
+        {search ? <div className="mt-2.5">{search}</div> : null}
 
         {/* min-h-0 + overflow-y-auto: the rail scrolls, the page does not. */}
         <div className="mt-3 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">

@@ -7,7 +7,17 @@ import { buildListHref, withCurrentHash, type ListQuery, type ListQueryLimits } 
 import { SearchIcon } from './icons';
 
 /**
- * The list search box — 206×36 in the frame, with the icon inside the field.
+ * The list search box.
+ *
+ * Measured, frame "CRM _ Leads": `Rectangle 4` @284,190 — 206x36, fill
+ * #f6f8fa, 1px #e5e7eb. It lives INSIDE the filter rail, directly under the
+ * "Filter by Leads" heading — not in a row of its own above the panels, which
+ * is where it used to be. 206 is the rail's full inner width (230 − 12 − 12),
+ * so it stretches rather than carrying a fixed width.
+ *
+ * The magnifier is on the RIGHT (@460,198, 20x20 — ten pixels in from the
+ * field's right edge at 490), and the placeholder is 12px LIGHT #6b7280
+ * @294,200. Both are easy to get backwards from memory; both are measured.
  *
  * The term is compiled by the engine into an OR across this module's
  * SEARCHABLE field types (`FIELD_TYPE_SPECS[type].searchable`) and ANDed under
@@ -44,17 +54,19 @@ export function SearchBox({ slug, query, limits }: SearchBoxProps) {
   }, [term, query, slug, limits, router]);
 
   return (
-    <div className="relative w-52">
-      <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-body" />
+    <div className="relative w-full">
       <Input
         type="search"
         value={term}
         placeholder="Search Here"
         aria-label="Search"
         onChange={(e) => setTerm(e.target.value)}
-        className="pl-10"
+        // pr-9 keeps the caret clear of the magnifier; font-light is the
+        // file's placeholder weight, which the shared Input does not assume.
+        className="h-9 w-full pr-9 font-light placeholder:font-light"
         data-track={`${slug}.list.search.input`}
       />
+      <SearchIcon className="pointer-events-none absolute right-2.5 top-1/2 h-5 w-5 -translate-y-1/2 text-body" />
     </div>
   );
 }

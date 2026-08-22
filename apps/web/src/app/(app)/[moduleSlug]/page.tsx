@@ -397,8 +397,10 @@ export default async function ModulePage({
   const canConfigureFields =
     principal.actor.isAdmin || principal.permissions.specials.has('MANAGE_FIELDS_LAYOUTS');
 
+  // gap-3, not gap-6: measured, the band ends at y=140 (84 + 56) and the panels
+  // start at y=152 — a 12px gutter, not 24.
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-3">
       {/* The title is NOT drawn here. Measured: on every designed frame it is
           a text node at @286,21, inside the top bar's 0…68 band — so the shell
           draws it and this page only names it. See
@@ -432,9 +434,11 @@ export default async function ModulePage({
         />
       </div>
 
-      <SearchBox slug={mod.slug} query={query} limits={LIMITS} />
-
       <ListScreen
+        // Measured @284,190: the search box sits INSIDE the filter rail, under
+        // its heading — not in a row of its own between the toolbar band and
+        // the panels, which is where it used to be.
+        search={<SearchBox slug={mod.slug} query={query} limits={LIMITS} />}
         slug={mod.slug}
         label={mod.label}
         labelPlural={mod.labelPlural}
