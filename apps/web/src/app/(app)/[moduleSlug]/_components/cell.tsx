@@ -175,10 +175,15 @@ export function renderFieldCell({ field, value, statusById, userNames }: RenderC
   }
 
   if (type === 'RECORD_LINK') {
-    // TODO(record engine): resolve to the target record's title field and link
-    // to it. That needs a batched lookup across modules — the read path the
-    // record engine slice introduces — so this shows the stored id until then.
-    return typeof value === 'string' ? value : EMPTY;
+    if (typeof value !== 'string') return EMPTY;
+    // A link whose target is a small config/core table (group, campaign) has
+    // its names injected as `options` by the page — the same substitution the
+    // status column gets. Resolve through them first; the id is the fallback,
+    // never a gap.
+    // TODO(record engine): a batched cross-module title lookup for links into
+    // arbitrary generic modules, which these options do not cover.
+    const linked = optionLabel(field, value);
+    return <span title={linked ?? value}>{linked ?? value}</span>;
   }
 
   if (type === 'FILE' || type === 'IMAGE') {
