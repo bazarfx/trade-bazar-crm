@@ -38,9 +38,10 @@ import {
 import type { Principal } from '../principal.js';
 import { ASSIGNMENT_REASON_KEY, assignOwner, type AssignmentReason } from '../assignment/index.js';
 import { auditWithin } from '../audit.js';
-import { assertModuleReadAccess } from '../config/access.js';
+import { assertModuleReadAccess, canReadModuleConfig } from '../config/access.js';
 import { ConfigError, requireModule, type Tx } from '../config/service.js';
 import {
+  coreModuleStorages,
   findRecordById,
   listRecords,
   recordDelegate,
@@ -65,7 +66,7 @@ export interface AuditMeta {
 // ── module context ────────────────────────────────────────────────────────
 
 /** A live field definition, as every path below needs it. */
-interface FieldRow {
+export interface FieldRow {
   key: string;
   label: string;
   type: FieldType;
@@ -74,10 +75,19 @@ interface FieldRow {
   isSystem: boolean;
   validation: unknown;
   defaultValue: unknown;
+  /** for RECORD_LINK: the module the link points at. How the conversion
+   *  service carries a lead's campaign onto its deal without naming either. */
+  relatedModuleId: string | null;
   options: { value: string }[];
 }
 
-interface ModuleContext {
+/**
+ * Exported for the SIBLING engines in this package (conversion) — not for
+ * routes, which work through the public functions below. A sibling engine
+ * that built its own context would be a second place for the read gate to
+ * be forgotten.
+ */
+export interface ModuleContext {
   module: {
     id: string;
     slug: string;
@@ -102,7 +112,7 @@ interface ModuleContext {
  * indistinguishable. Row-level scope is still applied in the repository — this
  * only decides whether the module is visible at all.
  */
-async function moduleContext(principal: Principal, moduleSlug: string): Promise<ModuleContext> {
+export async function moduleContext(principal: Principal, moduleSlug: string): Promise<ModuleContext> {
   assertModuleReadAccess(principal, moduleSlug);
   const module = await requireModule(moduleSlug);
 
@@ -122,6 +132,7 @@ async function moduleContext(principal: Principal, moduleSlug: string): Promise<
       isSystem: true,
       validation: true,
       defaultValue: true,
+      relatedModuleId: true,
       options: { where: { isDeleted: false }, select: { value: true } },
     },
   });
@@ -149,7 +160,7 @@ async function moduleContext(principal: Principal, moduleSlug: string): Promise<
   };
 }
 
-const notFound = (): ConfigError => new ConfigError('Record not found', 404, 'NOT_FOUND');
+export const notFound = (): ConfigError => new ConfigError('Record not found', 404, 'NOT_FOUND');
 
 /**
  * WHO an audit row says acted — resolved in ONE place.
@@ -161,7 +172,7 @@ const notFound = (): ConfigError => new ConfigError('Record not found', 404, 'NO
  * Intake)"). Every write below asks this function rather than assuming a
  * person, so a system-driven mutation can never fabricate a human actor.
  */
-function actorIdentity(principal: Principal): { actorType: AuditEntry['actorType']; actorId: string | null } {
+export function actorIdentity(principal: Principal): { actorType: AuditEntry['actorType']; actorId: string | null } {
   return principal.system
     ? { actorType: principal.system, actorId: null }
     : { actorType: 'USER', actorId: principal.actor.userId };
@@ -173,7 +184,7 @@ function str(value: unknown): string | null {
 }
 
 /** The field mapped to a physical column, if the module configured one. */
-function fieldForColumn(fields: FieldRow[], column: string | null): FieldRow | null {
+export function fieldForColumn(fields: FieldRow[], column: string | null): FieldRow | null {
   if (!column) return null;
   return fields.find((f) => f.systemColumn === column) ?? null;
 }
@@ -194,16 +205,24 @@ function fieldForColumn(fields: FieldRow[], column: string | null): FieldRow | n
  * The generated schema is built from exactly this list, which is what makes
  * the strip structural: an excluded key is not "ignored", it is not part of
  * the contract, so `z.object` drops it.
+ *
+ * A fourth exclusion comes from the TABLE rather than the type registry: the
+ * storage shape's `derivedColumns` — a deal's total and count, which spec
+ * §8.3 says are "always derived from rows, never typed by hand". Only the
+ * ledger writes them, so a value posted for one is dropped exactly like a
+ * FORMULA would be. Read off the shape, never off a slug.
  */
 function writableFields(ctx: ModuleContext, moduleSlug: string): FieldRow[] {
   const hidden = ctx.engine.hiddenFields(moduleSlug);
   const readonly = ctx.engine.readonlyFields(moduleSlug);
+  const derived = new Set(ctx.storage.shape.derivedColumns);
   return ctx.fields.filter(
     (f) =>
       !hidden.has(f.key) &&
       !readonly.has(f.key) &&
       !NEVER_SERIALISED.has(f.key) &&
-      !FIELD_TYPE_SPECS[f.type].isDerived,
+      !FIELD_TYPE_SPECS[f.type].isDerived &&
+      !(f.systemColumn !== null && derived.has(f.systemColumn)),
   );
 }
 
@@ -300,7 +319,7 @@ function asObject(input: unknown): Row {
  * compared a stored `Decimal(100)` against a submitted `100` would log a field
  * change that never happened, on every save.
  */
-function auditValue(type: FieldType, value: unknown): unknown {
+export function auditValue(type: FieldType, value: unknown): unknown {
   if (value === undefined || value === null) return null;
   switch (FIELD_TYPE_SPECS[type].storage) {
     case 'number': {
@@ -317,7 +336,7 @@ function auditValue(type: FieldType, value: unknown): unknown {
 }
 
 /** `auditValue` across a whole record, for the fields given. */
-function auditValues(fields: FieldRow[], values: Row): Record<string, unknown> {
+export function auditValues(fields: FieldRow[], values: Row): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const f of fields) out[f.key] = auditValue(f.type, values[f.key]);
   return out;
@@ -369,7 +388,7 @@ function translateWriteError(err: unknown): unknown {
   }
 }
 
-async function writing<T>(op: () => Promise<T>): Promise<T> {
+export async function writing<T>(op: () => Promise<T>): Promise<T> {
   try {
     return await op();
   } catch (err) {
@@ -379,7 +398,7 @@ async function writing<T>(op: () => Promise<T>): Promise<T> {
 
 /** The delegate for this module, or a loud failure. A module flagged core
  *  whose table does not exist is broken config, not a user error. */
-function delegateOrThrow(client: unknown, ctx: ModuleContext) {
+export function delegateOrThrow(client: unknown, ctx: ModuleContext) {
   const delegate = recordDelegate(client, ctx.storage.delegateName);
   if (!delegate) {
     throw new ConfigError(`Module "${ctx.module.slug}" has no record storage`, 500);
@@ -395,7 +414,7 @@ function delegateOrThrow(client: unknown, ctx: ModuleContext) {
  * from a name — every status in the product is renameable, and the seeded
  * "New" is data, not code.
  */
-async function defaultStatusId(moduleId: string): Promise<string | null> {
+export async function defaultStatusId(moduleId: string): Promise<string | null> {
   const status = await prisma.status.findFirst({
     where: { moduleId, isDeleted: false },
     orderBy: [{ displayOrder: 'asc' }, { id: 'asc' }],
@@ -439,7 +458,7 @@ function mayChooseOwner(ctx: ModuleContext): boolean {
  * unassigned — nobody is going to call it — and spec §5.5 has the system
  * moving work OFF a deactivated user, not onto one.
  */
-async function assertAssignableOwner(tx: Tx, userId: string): Promise<void> {
+export async function assertAssignableOwner(tx: Tx, userId: string): Promise<void> {
   const user = await tx.user.findFirst({
     where: { id: userId, isActive: true },
     select: { id: true },
@@ -731,14 +750,20 @@ type MatchReason = 'phone' | 'name_language';
  * logging depend on" (spec §4.3), which is why Leads matches on `phone` and
  * not on the alternate or WhatsApp numbers sitting beside it. With no system
  * phone field, the first phone field is the only sensible candidate.
+ *
+ * Exported because the ARK pipeline matches on THE SAME key (spec §7 step 3,
+ * "by normalised phone"): one definition of "the phone", so the duplicate
+ * scan and the webhook can never disagree about which number a record is
+ * matched on.
  */
-function primaryPhoneField(fields: FieldRow[]): FieldRow | null {
+export function primaryPhoneField(fields: FieldRow[]): FieldRow | null {
   const phones = fields.filter((f) => f.type === 'PHONE');
   return phones.find((f) => f.isSystem) ?? phones[0] ?? null;
 }
 
-/** An equality condition against wherever a field physically lives. */
-function matchOn(storage: Storage, key: string, value: unknown): Row {
+/** An equality condition against wherever a field physically lives. Exported
+ *  for the ARK pipeline's matching reads, which probe the same way. */
+export function matchOn(storage: Storage, key: string, value: unknown): Row {
   const loc = storage.resolver.resolve(key);
   return loc.column
     ? { [loc.column]: value }
@@ -869,7 +894,18 @@ export async function updateRecord(
   const ctx = await moduleContext(principal, moduleSlug);
   const { storage, module } = ctx;
 
-  const writable = writableFields(ctx, moduleSlug);
+  // Closed By is IMMUTABLE (spec §7.1: "the telesales agent who owned the
+  // lead at conversion. Immutable. Permanent credit — this is what
+  // performance reports count"). It is written exactly once, by the
+  // conversion service, and no update from anyone — Admin included — may
+  // carry it: a role that could edit it could move commission. Dropped here,
+  // before validation, so the generated schema never even sees the key, and
+  // the generic engine learns which column that is from the storage shape
+  // rather than from a module name.
+  const immutable = storage.shape.closedByColumn;
+  const writable = writableFields(ctx, moduleSlug).filter(
+    (f) => immutable === null || f.systemColumn !== immutable,
+  );
   let submitted = asObject(input);
 
   // An owner change is a reassignment, which is its own permission. Dropping
@@ -1276,6 +1312,13 @@ export interface TimelineEntry {
   actorName: string | null;
   changes: Record<string, unknown> | null;
   createdAt: string;
+  /**
+   * True when this row was written against the record's PARENT — a deal's
+   * entry from its lead's life (spec §8). The keys in `changes` are then the
+   * parent module's field keys, which is what a renderer needs to know to
+   * label them.
+   */
+  inherited: boolean;
 }
 
 export interface TimelineResult {
@@ -1323,8 +1366,19 @@ export async function getTimeline(
   const take = Math.min(Math.max(opts.take ?? TIMELINE_DEFAULT_TAKE, 1), TIMELINE_MAX_TAKE);
   const cursor = str(opts.cursor ?? null);
 
+  // One unbroken history (spec §8): a record whose table declares
+  // `inheritsTimelineFrom` shows its parent's rows interleaved with its own,
+  // by time. The parent is read off the ROW through the column the shape
+  // names — nothing here knows that a deal has a lead, only that this table
+  // has a parent. One query over both entities, so the cursor pagination
+  // below is unchanged: `AuditLog` is one table and `id` is unique across it.
+  const own = { entityType: ctx.storage.shape.entityType, entityId: id };
+  const inherits = ctx.storage.shape.inheritsTimelineFrom;
+  const parentId = inherits ? str(found.raw[inherits.column]) : null;
+  const parent = inherits && parentId ? { entityType: inherits.entityType, entityId: parentId } : null;
+
   const rows = await prisma.auditLog.findMany({
-    where: { entityType: ctx.storage.shape.entityType, entityId: id },
+    where: parent ? { OR: [own, parent] } : own,
     // `id` breaks ties: several entries of one save share a timestamp, and an
     // unstable order would repeat or skip rows across a cursor page.
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -1332,6 +1386,7 @@ export async function getTimeline(
     take: take + 1,
     select: {
       id: true,
+      entityType: true,
       action: true,
       actorType: true,
       actorId: true,
@@ -1357,18 +1412,53 @@ export async function getTimeline(
   // is not a security control, and a timeline is a read like any other.
   const hidden = ctx.engine.hiddenFields(moduleSlug);
 
+  // The same rule for the inherited rows, under the PARENT module's matrix:
+  // a field hidden on Leads stays hidden when its history shows on a deal.
+  // An actor with no access to the parent module at all keeps the lines —
+  // that something happened, by whom and when, is the deal's own history —
+  // but none of the values. Fail closed, never open.
+  const parentHidden = parent ? await inheritedHiddenFields(principal, ctx, parent.entityType) : null;
+
   return {
-    entries: page.map((r) => ({
-      id: r.id,
-      action: r.action,
-      actorType: r.actorType,
-      actorId: r.actorId,
-      actorName: r.actorId ? (nameById.get(r.actorId) ?? null) : null,
-      changes: visibleChanges(r.changes, hidden),
-      createdAt: r.createdAt.toISOString(),
-    })),
+    entries: page.map((r) => {
+      const inherited = parent !== null && r.entityType === parent.entityType;
+      return {
+        id: r.id,
+        action: r.action,
+        actorType: r.actorType,
+        actorId: r.actorId,
+        actorName: r.actorId ? (nameById.get(r.actorId) ?? null) : null,
+        changes: inherited
+          ? parentHidden === null
+            ? null
+            : visibleChanges(r.changes, parentHidden)
+          : visibleChanges(r.changes, hidden),
+        createdAt: r.createdAt.toISOString(),
+        inherited,
+      };
+    }),
     nextCursor,
   };
+}
+
+/**
+ * The hidden-field set for the module whose table writes `entityType`, or
+ * null when this actor may not read that module's config at all.
+ *
+ * Resolved through the storage shapes — "which module writes `Lead` rows" is
+ * a question only the table layer can answer — and never through a slug.
+ * Null, not an empty set, when the parent module is unknown or closed to
+ * the actor: an unknown parent is broken config, and the fail-closed answer
+ * for both is to show no values.
+ */
+async function inheritedHiddenFields(
+  principal: Principal,
+  ctx: ModuleContext,
+  entityType: string,
+): Promise<ReadonlySet<string> | null> {
+  const parent = (await coreModuleStorages()).find((m) => m.shape.entityType === entityType);
+  if (!parent || !canReadModuleConfig(principal, parent.ref.slug)) return null;
+  return ctx.engine.hiddenFields(parent.ref.slug);
 }
 
 /** Drop hidden and never-serialised keys from a stored diff. An entry left

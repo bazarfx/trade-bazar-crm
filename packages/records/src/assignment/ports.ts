@@ -156,19 +156,7 @@ export class PrismaAssignmentPorts implements AssignmentPorts {
    * reject it anyway, one layer later, with nothing to say about why.
    */
   async getAdminUserId(): Promise<string> {
-    const admin = await this.tx.user.findFirst({
-      where: { isActive: true, role: { isLocked: true } },
-      orderBy: { id: 'asc' },
-      select: { id: true },
-    });
-    if (!admin) {
-      throw new ConfigError(
-        'No active administrator exists to own this record',
-        500,
-        'GUARDRAIL',
-      );
-    }
-    return admin.id;
+    return adminUserId(this.tx);
   }
 
   /**
@@ -215,25 +203,67 @@ export class PrismaAssignmentPorts implements AssignmentPorts {
       );
     }
 
-    const rows = await this.tx.$queryRaw<{ lastAssignedUserId: string | null }[]>`
-      INSERT INTO "AssignmentState" ("key", "lastAssignedUserId", "updatedAt")
-      VALUES (${key}, (${members}::text[])[1], now())
-      ON CONFLICT ("key") DO UPDATE SET
-        "lastAssignedUserId" = (${members}::text[])[
-          (COALESCE(
-            array_position(${members}::text[], "AssignmentState"."lastAssignedUserId"),
-            0
-          ) % ${size}::int) + 1
-        ],
-        "updatedAt" = now()
-      RETURNING "lastAssignedUserId"
-    `;
-
-    const chosen = rows[0]?.lastAssignedUserId ?? null;
-    const index = chosen === null ? -1 : members.indexOf(chosen);
-    // The id came out of `members`, so this cannot miss; 0 is the same answer
-    // the SQL gives for "the stored user is not in the list" and keeps the
-    // caller assigning rather than throwing.
-    return index >= 0 ? index : 0;
+    return advanceRota(this.tx, key, members);
   }
+}
+
+/**
+ * THE rota. One `INSERT ... ON CONFLICT DO UPDATE` over `AssignmentState`,
+ * exactly as `nextIndex` describes it above, exported so every round-robin in
+ * the product — lead assignment, and the deal handover rule (spec §7.1) —
+ * advances the same table the same way. A second rota implementation would
+ * be a second place for the lost-update bug to come back.
+ *
+ * `key` namespaces the cursor (`leads:group:<id>`, `handover:role:<id>`);
+ * `members` is the candidate list in a STABLE order, non-empty. Returns the
+ * index into `members` that was handed out.
+ */
+export async function advanceRota(tx: Tx, key: string, members: string[]): Promise<number> {
+  const size = members.length;
+  if (size <= 0) {
+    throw new ConfigError(`Assignment rota "${key}" was advanced with no candidates`, 500, 'GUARDRAIL');
+  }
+
+  const rows = await tx.$queryRaw<{ lastAssignedUserId: string | null }[]>`
+    INSERT INTO "AssignmentState" ("key", "lastAssignedUserId", "updatedAt")
+    VALUES (${key}, (${members}::text[])[1], now())
+    ON CONFLICT ("key") DO UPDATE SET
+      "lastAssignedUserId" = (${members}::text[])[
+        (COALESCE(
+          array_position(${members}::text[], "AssignmentState"."lastAssignedUserId"),
+          0
+        ) % ${size}::int) + 1
+      ],
+      "updatedAt" = now()
+    RETURNING "lastAssignedUserId"
+  `;
+
+  const chosen = rows[0]?.lastAssignedUserId ?? null;
+  const index = chosen === null ? -1 : members.indexOf(chosen);
+  // The id came out of `members`, so this cannot miss; 0 is the same answer
+  // the SQL gives for "the stored user is not in the list" and keeps the
+  // caller assigning rather than throwing.
+  return index >= 0 ? index : 0;
+}
+
+/**
+ * The last resort for EVERY ownership decision — lead assignment and deal
+ * handover alike. See `getAdminUserId` on the class for why it reads
+ * `Role.isLocked` and never a name, and why it throws instead of inventing
+ * an id.
+ */
+export async function adminUserId(tx: Tx): Promise<string> {
+  const admin = await tx.user.findFirst({
+    where: { isActive: true, role: { isLocked: true } },
+    orderBy: { id: 'asc' },
+    select: { id: true },
+  });
+  if (!admin) {
+    throw new ConfigError(
+      'No active administrator exists to own this record',
+      500,
+      'GUARDRAIL',
+    );
+  }
+  return admin.id;
 }

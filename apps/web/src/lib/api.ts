@@ -66,3 +66,17 @@ export async function parseBody<S extends ZodTypeAny>(req: Request, schema: S): 
   }
   return schema.parse(raw);
 }
+
+/**
+ * The origin a webhook platform will reach this server on. Behind a proxy the
+ * forwarded headers carry the public host; bare, the request URL does. Used by
+ * the source-create responses — campaign intake and ARK alike — to print the
+ * full receiver URL the one time the token exists. Only ever names the host;
+ * the path is the service's.
+ */
+export function publicOrigin(req: Request): string {
+  const url = new URL(req.url);
+  const proto = req.headers.get('x-forwarded-proto')?.split(',')[0]?.trim() ?? url.protocol.replace(':', '');
+  const host = req.headers.get('x-forwarded-host')?.split(',')[0]?.trim() ?? req.headers.get('host') ?? url.host;
+  return `${proto}://${host}`;
+}

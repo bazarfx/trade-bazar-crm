@@ -50,7 +50,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     actor.isAdmin ||
     permissions.specials.has('MANAGE_FIELDS_LAYOUTS') ||
     permissions.specials.has('MANAGE_STATUSES') ||
-    permissions.specials.has('MANAGE_USERS_ROLES');
+    permissions.specials.has('MANAGE_USERS_ROLES') ||
+    permissions.specials.has('MANAGE_CAMPAIGNS');
+
+  // The two webhook screens share one door (MANAGE_CAMPAIGNS, Admin
+  // fallback): a webhook source is a webhook source, whichever platform
+  // posts into it. Each page gates itself again on render.
+  const canManageWebhooks = actor.isAdmin || permissions.specials.has('MANAGE_CAMPAIGNS');
 
   // Settings pages are the shell's own areas, not modules — they never sort
   // against `navOrder` and their icons only surface in the collapsed rail,
@@ -60,6 +66,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         { key: 'modules', href: '/settings/modules', label: 'Modules & fields', icon: 'module' },
         { key: 'roles', href: '/settings/roles', label: 'Roles & permissions', icon: 'user-cog' },
         { key: 'assignment', href: '/settings/assignment', label: 'Assignment', icon: 'users' },
+        ...(canManageWebhooks
+          ? [
+              { key: 'intake', href: '/settings/intake', label: 'Campaign intake', icon: 'megaphone' },
+              { key: 'ark', href: '/settings/ark', label: 'ARK Terminal', icon: 'banknote' },
+            ]
+          : []),
       ]
     : [];
 

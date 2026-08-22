@@ -15,6 +15,7 @@ import { closeQueues } from './lib/queues.js';
 import { startMaintenanceWorker, scheduleMaintenance } from './jobs/maintenance.js';
 import { startImportsWorker } from './jobs/imports.js';
 import { startCampaignIntakeWorker } from './jobs/campaign-intake.js';
+import { startArkWebhookWorker } from './jobs/ark-webhook.js';
 
 const workers: Worker[] = [];
 
@@ -31,6 +32,13 @@ async function main() {
   // and enqueues its id; this consumer runs the source's Admin-edited mapping
   // over it and creates the record through the engine as a system actor.
   workers.push(startCampaignIntakeWorker());
+
+  // The ARK webhook — the only conversion path (spec §7). The public endpoint
+  // in apps/web stores each raw account event and enqueues its id; this
+  // consumer matches it (deals first, then active leads, by phone), takes one
+  // of the four outcomes through the conversion service, and settles the
+  // event in the same transaction as the deal or deposit it produced.
+  workers.push(startArkWebhookWorker());
 
   console.log(`▸ worker up — ${workers.length} consumer(s): ${workers.map((w) => w.name).join(', ')}`);
 }

@@ -13,12 +13,24 @@ import { renderValue, valueTooltip, type DetailField } from './value';
  * produced them: the same component draws a Lead, a Deal and whatever module
  * exists in 2027. Editing happens in the full-screen form overlay, never
  * inline here — there is exactly one place a record is written from.
+ *
+ * Some values are IMMUTABLE by design — Closed By on a deal is "permanent
+ * credit for the converting agent" (spec §7.1) and is never written again
+ * after conversion. The page names those from the storage shape, and this
+ * panel draws a lock beside them so the reader knows the value is a fact,
+ * not a setting.
  */
 
 export interface InfoSection {
   id: string;
   label: string;
   fields: DetailField[];
+}
+
+/** A field whose value can never be edited, with the reason a person reads. */
+export interface LockedValue {
+  key: string;
+  reason: string;
 }
 
 export interface InfoPanelProps {
@@ -29,6 +41,8 @@ export interface InfoPanelProps {
   statuses: StatusOption[];
   /** [id, fullName] for every user this record references */
   userNames: [string, string][];
+  /** immutable values, by field key — drawn with a lock */
+  locked?: LockedValue[];
   className?: string;
 }
 
@@ -38,12 +52,14 @@ export function InfoPanel({
   record,
   statuses,
   userNames,
+  locked = [],
   className,
 }: InfoPanelProps) {
   // Maps, not `.find()` per row: a Leads record renders ~33 rows and both of
   // these are keyed on ids that never repeat.
   const statusById = useMemo(() => new Map(statuses.map((s) => [s.id, s])), [statuses]);
   const userNameById = useMemo(() => new Map(userNames), [userNames]);
+  const lockReason = useMemo(() => new Map(locked.map((l) => [l.key, l.reason])), [locked]);
 
   return (
     <Panel className={cn('flex flex-col overflow-hidden', className)}>
@@ -73,6 +89,7 @@ export function InfoPanel({
                   {section.fields.map((field) => {
                     const value = record[field.key];
                     const args = { field, value, statusById, userNameById };
+                    const reason = lockReason.get(field.key);
                     return (
                       <div key={field.key} className="grid grid-cols-3 items-baseline gap-3">
                         {/* Truncate, never wrap: field labels are Admin-authored
@@ -82,10 +99,17 @@ export function InfoPanel({
                           {field.label}
                         </dt>
                         <dd
-                          className="col-span-2 min-w-0 truncate text-sm text-heading"
-                          title={valueTooltip(args)}
+                          className="col-span-2 flex min-w-0 items-baseline gap-1.5 text-sm text-heading"
+                          title={reason ?? valueTooltip(args)}
                         >
-                          {renderValue(args)}
+                          {reason !== undefined ? (
+                            // The glyph carries the reason as its accessible
+                            // name; sighted readers get the same text on hover.
+                            <span role="img" aria-label={reason} className="shrink-0 text-xs text-muted">
+                              🔒
+                            </span>
+                          ) : null}
+                          <span className="min-w-0 truncate">{renderValue(args)}</span>
                         </dd>
                       </div>
                     );

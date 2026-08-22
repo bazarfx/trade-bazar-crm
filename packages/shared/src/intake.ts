@@ -72,6 +72,28 @@ export const INTAKE_MAX_BODY_BYTES = 256 * 1024;
  */
 export const INTAKE_RAW_TEXT_KEY = '_raw';
 
+// ── webhook source kinds ──────────────────────────────────────────────────
+
+/**
+ * What a `WebhookSource` IS — the `kind` column's vocabulary.
+ *
+ * `CAMPAIGN`: a campaign platform posts leads; the source's mapping is an
+ * `intakeMappingSchema` and events drain through `CAMPAIGN_INTAKE_QUEUE`.
+ * `ARK`: the terminal posts account events; the mapping is an
+ * `arkMappingSchema` and events drain through `ARK_WEBHOOK_QUEUE` into the
+ * conversion pipeline (`./ark.ts`, `./conversion.ts`).
+ *
+ * A column, never a name prefix: the name is the Admin's to edit, and the two
+ * kinds answer on different public endpoints — a token of one kind posted to
+ * the other's endpoint is a 404, which is only possible if the kind is data
+ * the lookup can filter on.
+ */
+export const WEBHOOK_SOURCE_KINDS = ['CAMPAIGN', 'ARK'] as const;
+export type WebhookSourceKind = (typeof WEBHOOK_SOURCE_KINDS)[number];
+
+export const CAMPAIGN_SOURCE_KIND = 'CAMPAIGN' satisfies WebhookSourceKind;
+export const ARK_SOURCE_KIND = 'ARK' satisfies WebhookSourceKind;
+
 // ── webhook source payloads ───────────────────────────────────────────────
 
 /** Matches the actual `WebhookSource` model: name + target module + active
@@ -217,6 +239,7 @@ export interface WebhookSourceDto {
   name: string;
   /** the stable endpoint id shown in lists — NOT the token, which is never stored */
   slug: string;
+  kind: WebhookSourceKind;
   moduleId: string;
   moduleSlug: string;
   moduleLabel: string;
@@ -255,6 +278,9 @@ export interface WebhookEventDto {
   /** the record the event produced, if any (`WebhookEvent.leadId`) */
   recordId: string | null;
   dealId: string | null;
+  /** which pipeline outcome the event took — an `ArkOutcome` on an ARK
+   *  source, null on campaign intake and on events that never settled */
+  outcome: string | null;
   replayCount: number;
   receivedAt: string;
   processedAt: string | null;

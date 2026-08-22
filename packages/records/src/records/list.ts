@@ -174,11 +174,68 @@ interface DelegateShape {
    */
   canFlagDuplicates: boolean;
   /**
+   * Column holding the PERMANENT CREDIT for a conversion — "the telesales
+   * agent who owned the lead at conversion. Immutable." (spec §7.1). Written
+   * once by the conversion service and never again: the record engine strips
+   * it from every update, whoever is asking, and nothing else may write it.
+   * Null = rows here are not the product of a conversion.
+   */
+  closedByColumn: string | null;
+  /**
+   * Columns COMPUTED from other rows and never typed by hand — a deal's
+   * total and count are "always derived from rows" (spec §8.3). Stripped from
+   * every write that arrives as field values; only the ledger may set them.
+   */
+  derivedColumns: readonly string[];
+  /**
+   * Where rows in this table INHERIT their timeline from (spec §8: a deal
+   * "inherits the lead's entire timeline and continues logging on top").
+   * `column` holds the parent's id; `entityType` is the parent's own
+   * `AuditLog.entityType`. `getTimeline` merges the parent's rows in by time.
+   */
+  inheritsTimelineFrom: { column: string; entityType: string } | null;
+  /**
+   * Column carrying the EXTERNAL account identifier the ARK webhook matches
+   * on and fills in (spec §7, "auto-fills ARK Account Number"). A column,
+   * not a field key: the Admin may relabel or re-key the field that shows
+   * it, and the pipeline still finds it through the field mapped here.
+   */
+  accountNumberColumn: string | null;
+  /** The deposit ledger this table's totals are derived from; see `LedgerShape`. */
+  ledger: LedgerShape | null;
+  /**
    * How this table expresses each ownership key `scopeFilter` can emit.
    * A key with no entry here is inexpressible on this table -> deny all.
    */
   scope: Record<string, ScopeExpression>;
   ownership: OwnershipShape;
+}
+
+/**
+ * A ledger: an append-only child table whose rows a parent table SUMMARISES
+ * (spec §8.3, "every deposit is its own row… totals are always derived from
+ * rows, never typed by hand"). Declared on the PARENT's shape so the
+ * conversion service can write a deposit and recompute the parent without
+ * naming either table.
+ */
+export interface LedgerShape {
+  /** Prisma delegate of the ledger table */
+  delegateName: string;
+  /** column on a ledger row pointing back at the parent */
+  parentColumn: string;
+  amountColumn: string;
+  atColumn: string;
+  /** column linking a ledger row to the raw webhook event that produced it —
+   *  the idempotency key for replays, and the row's evidence */
+  eventColumn: string;
+  /** column marking the first deposit (the FTD) */
+  firstColumn: string;
+  /** ON THE PARENT: the derived total and count */
+  totalColumn: string;
+  countColumn: string;
+  /** ON THE PARENT: the first deposit's amount and time, snapshotted at conversion */
+  firstAmountColumn: string;
+  firstAtColumn: string;
 }
 
 /**
@@ -266,9 +323,28 @@ const GENERIC_SHAPE: DelegateShape = {
   createdByColumn: 'createdById',
   canFlagDuplicates: false,
   canInsertRows: true,
+  closedByColumn: null,
+  derivedColumns: [],
+  inheritsTimelineFrom: null,
+  accountNumberColumn: null,
+  ledger: null,
   scope: OWNER_COLUMN_SCOPE,
   ownership: OWNER_COLUMN_OWNERSHIP,
 };
+
+/** The conversion-related columns most tables do not have. Spread into every
+ *  shape that is neither side of a conversion, so adding one of these columns
+ *  to the interface fails to compile in exactly one place. */
+const NOT_CONVERTIBLE = {
+  closedByColumn: null,
+  derivedColumns: [],
+  inheritsTimelineFrom: null,
+  accountNumberColumn: null,
+  ledger: null,
+} as const satisfies Pick<
+  DelegateShape,
+  'closedByColumn' | 'derivedColumns' | 'inheritsTimelineFrom' | 'accountNumberColumn' | 'ledger'
+>;
 
 const DELEGATE_SHAPES: Record<string, DelegateShape> = {
   lead: {
@@ -284,6 +360,10 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
     // The only table `DuplicateFlag` can reference — see the field comment.
     canFlagDuplicates: true,
     canInsertRows: true,
+    ...NOT_CONVERTIBLE,
+    // The SOURCE side of a conversion: the webhook matches on phone, then
+    // fills this column and moves the status to the CONVERTED / SIGNED_UP tag.
+    accountNumberColumn: 'arkAccountNo',
     scope: { ...OWNER_COLUMN_SCOPE, groupId: (v) => ({ groupId: v }) },
     ownership: {
       select: { ownerId: true, groupId: true, owner: { select: { departmentId: true } } },
@@ -310,6 +390,32 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
     createdByColumn: null,
     canFlagDuplicates: false,
     canInsertRows: true,
+    // The TARGET side of a conversion. This block is the ONE place the engine
+    // learns what a deal is — from the table, never from the slug — and the
+    // conversion service reads every column it writes from here.
+    //
+    // `closedById` is IMMUTABLE (spec §7.1): set once to the lead's owner at
+    // the moment of conversion, stripped from every update by `updateRecord`,
+    // never touched by a transfer. `totalDeposited` / `depositCount` are
+    // derived from the ledger below and may not be typed (spec §8.3).
+    closedByColumn: 'closedById',
+    derivedColumns: ['totalDeposited', 'depositCount'],
+    // One unbroken history: `getTimeline` merges the originating lead's rows
+    // (spec §8). `Lead` is that table's own `entityType`, declared above.
+    inheritsTimelineFrom: { column: 'leadId', entityType: 'Lead' },
+    accountNumberColumn: 'arkAccountNo',
+    ledger: {
+      delegateName: 'deposit',
+      parentColumn: 'dealId',
+      amountColumn: 'amount',
+      atColumn: 'depositedAt',
+      eventColumn: 'webhookEventId',
+      firstColumn: 'isFtd',
+      totalColumn: 'totalDeposited',
+      countColumn: 'depositCount',
+      firstAmountColumn: 'ftdAmount',
+      firstAtColumn: 'ftdDate',
+    },
     scope: OWNER_COLUMN_SCOPE,
     ownership: OWNER_COLUMN_OWNERSHIP,
   },
@@ -325,6 +431,7 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
     createdByColumn: null,
     canFlagDuplicates: false,
     canInsertRows: true,
+    ...NOT_CONVERTIBLE,
     scope: {},
     // Nothing to read: every ownership answer is null, so OWN, GROUP and
     // DEPARTMENT all deny and only ALL sees a campaign.
@@ -351,6 +458,7 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
     canFlagDuplicates: false,
     // An account, not a record — see `canInsertRows`.
     canInsertRows: false,
+    ...NOT_CONVERTIBLE,
     scope: {
       // OWN on the Profile module is the actor's own row — a user's identity
       // IS its ownership. Without this, a role scoped OWN on users could not
@@ -394,6 +502,7 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
     canFlagDuplicates: false,
     // A ledger row the webhook writes, with its source event — see above.
     canInsertRows: false,
+    ...NOT_CONVERTIBLE,
     scope: {
       ownerId: (v) => ({ deal: { ownerId: v } }),
       owner: (v) => {
@@ -504,6 +613,27 @@ export function storageFor(module: ModuleRef, fields: FieldMeta[]): Storage {
 }
 
 /**
+ * Every enabled core module with the shape its table has.
+ *
+ * This is how a sibling engine finds "the module that is the product of a
+ * conversion" or "the module whose timeline a deal inherits" WITHOUT naming
+ * a slug: it asks for the shape that declares a `closedByColumn`, or the one
+ * whose `entityType` another shape points at. The answer follows the tables,
+ * so a renamed module still resolves and an Admin-created module (which has
+ * none of these columns) is never mistaken for one.
+ */
+export async function coreModuleStorages(): Promise<{ ref: Required<ModuleRef>; shape: DelegateShape }[]> {
+  const modules = await prisma.moduleDefinition.findMany({
+    where: { isCore: true, isEnabled: true },
+    select: { id: true, slug: true, isCore: true },
+  });
+  return modules.map((m) => {
+    const ref = { id: m.id, slug: m.slug, isCore: m.isCore };
+    return { ref, shape: storageFor(ref, []).shape };
+  });
+}
+
+/**
  * The delegate for this storage, off a Prisma client OR an open transaction.
  *
  * `client` is `unknown` on purpose: `PrismaClient` and `Prisma.TransactionClient`
@@ -545,6 +675,10 @@ export function selectFor(storage: Storage, fields: FieldMeta[], withOwnership =
   const select: Row = { id: true };
   if (storage.shape.hasJsonContainer) select[storage.resolver.jsonColumn] = true;
   for (const f of fields) if (f.systemColumn) select[f.systemColumn] = true;
+  // The parent link is a STORAGE fact the timeline needs, whether or not an
+  // Admin kept a field on it: a deal whose "Linked Lead" field was hidden or
+  // retired still inherits its lead's history.
+  if (storage.shape.inheritsTimelineFrom) select[storage.shape.inheritsTimelineFrom.column] = true;
   // Ownership last: its fragments are relation selects, which are strictly
   // more specific than the `true` a field column would have written.
   if (withOwnership) Object.assign(select, storage.shape.ownership.select);

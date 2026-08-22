@@ -1,7 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import { RecordFormOverlay } from '@/app/(app)/[moduleSlug]/_components/record-form-overlay';
+import {
+  RecordFormOverlay,
+  type LockedField,
+} from '@/app/(app)/[moduleSlug]/_components/record-form-overlay';
 import { Button } from '@/components/ui';
 
 /**
@@ -11,6 +14,10 @@ import { Button } from '@/components/ui';
  * overlay — so this button opens that form rather than growing an inline
  * editor beside it. Two write surfaces would mean two validation paths, and
  * the one that drifts is always the one nobody is looking at.
+ *
+ * There is deliberately no Convert action here, or anywhere: conversion is
+ * webhook-driven only (spec §7). A lead becomes a deal when ARK reports a
+ * deposit, and at no other moment.
  */
 export interface DetailActionsProps {
   slug: string;
@@ -24,6 +31,11 @@ export interface DetailActionsProps {
    * `RecordFormOverlay`.
    */
   systemColumns: Record<string, string | null>;
+  /**
+   * Fields the form may show but never write — Closed By, the ledger-derived
+   * totals — decided by the page from the storage shape. See the form.
+   */
+  locked: LockedField[];
 }
 
 export function DetailActions({
@@ -32,6 +44,7 @@ export function DetailActions({
   recordId,
   canEdit,
   systemColumns,
+  locked,
 }: DetailActionsProps) {
   const [editing, setEditing] = useState(false);
 
@@ -57,6 +70,7 @@ export function DetailActions({
           slug={slug}
           label={label}
           systemColumns={systemColumns}
+          locked={locked}
           recordId={recordId}
           onClose={() => setEditing(false)}
         />

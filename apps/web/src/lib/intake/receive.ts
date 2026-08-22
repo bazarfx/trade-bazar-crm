@@ -15,7 +15,7 @@
  */
 import 'server-only';
 import { prisma, Prisma } from '@crm/db';
-import { INTAKE_RAW_TEXT_KEY, INTAKE_TOKEN_PATTERN } from '@crm/shared';
+import { CAMPAIGN_SOURCE_KIND, INTAKE_RAW_TEXT_KEY, INTAKE_TOKEN_PATTERN } from '@crm/shared';
 import { enqueueIntake } from './queue';
 import { hashIntakeToken } from './sources';
 
@@ -37,7 +37,9 @@ export async function lookupIntakeSource(token: string): Promise<IntakeLookup> {
   if (!INTAKE_TOKEN_PATTERN.test(token)) return { outcome: 'unknown' };
 
   const source = await prisma.webhookSource.findFirst({
-    where: { tokenHash: hashIntakeToken(token) },
+    // Kind-scoped: an ARK token posted to the intake endpoint is a 404, not
+    // a campaign lead made out of an account event.
+    where: { tokenHash: hashIntakeToken(token), kind: CAMPAIGN_SOURCE_KIND },
     select: { id: true, isActive: true },
   });
   if (!source) return { outcome: 'unknown' };

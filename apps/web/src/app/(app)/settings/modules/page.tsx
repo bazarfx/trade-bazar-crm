@@ -28,7 +28,9 @@ export default async function SettingsPage() {
   // broader than any module-scoped special in the matrix. The same condition
   // `canManagePlatformSettings` enforces server-side.
   const canManageRouting = actor.isAdmin;
-  if (!(canConfigureModules || canManageRoles)) redirect('/');
+  // Webhook sources — campaign intake and the ARK pipeline — share one door.
+  const canManageWebhooks = actor.isAdmin || permissions.specials.has('MANAGE_CAMPAIGNS');
+  if (!(canConfigureModules || canManageRoles || canManageWebhooks)) redirect('/');
 
   // Skipped entirely for someone who only administers roles — a query whose
   // result they are not allowed to see is a query worth not running.
@@ -100,6 +102,49 @@ export default async function SettingsPage() {
               className="shrink-0 text-sm text-primary hover:underline"
             >
               Open assignment →
+            </Link>
+          </div>
+        </Panel>
+      )}
+
+      {canManageWebhooks && (
+        <Panel className="overflow-hidden">
+          <div className="flex items-center justify-between gap-6 px-6 py-5">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-heading">Campaign intake</p>
+              <p className="mt-1 text-sm text-body">
+                The webhook URLs campaign platforms post leads into, each with its own payload
+                mapping and event log. Every payload is stored raw and replayable.
+              </p>
+            </div>
+            <Link
+              href="/settings/intake"
+              data-track="settings.landing.intake.open"
+              className="shrink-0 text-sm text-primary hover:underline"
+            >
+              Open intake →
+            </Link>
+          </div>
+        </Panel>
+      )}
+
+      {canManageWebhooks && (
+        <Panel className="overflow-hidden">
+          <div className="flex items-center justify-between gap-6 px-6 py-5">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-heading">ARK Terminal</p>
+              <p className="mt-1 text-sm text-body">
+                The account-event webhook — the only way a lead converts. Sources, the payload
+                mapping onto the pipeline&apos;s concepts, and every event with the outcome it
+                produced.
+              </p>
+            </div>
+            <Link
+              href="/settings/ark"
+              data-track="settings.landing.ark.open"
+              className="shrink-0 text-sm text-primary hover:underline"
+            >
+              Open ARK →
             </Link>
           </div>
         </Panel>

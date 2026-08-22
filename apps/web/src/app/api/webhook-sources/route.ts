@@ -8,20 +8,8 @@
  */
 import { NextResponse } from 'next/server';
 import { webhookSourceCreateSchema } from '@crm/shared';
-import { guarded, parseBody } from '@/lib/api';
+import { guarded, parseBody, publicOrigin } from '@/lib/api';
 import { createWebhookSource, listWebhookSources } from '@/lib/intake/sources';
-
-/**
- * The origin a platform will reach this server on. Behind a proxy the
- * forwarded headers carry the public host; bare, the request URL does. The
- * token is appended by the service, so this only ever names the host.
- */
-function publicOrigin(req: Request): string {
-  const url = new URL(req.url);
-  const proto = req.headers.get('x-forwarded-proto')?.split(',')[0]?.trim() ?? url.protocol.replace(':', '');
-  const host = req.headers.get('x-forwarded-host')?.split(',')[0]?.trim() ?? req.headers.get('host') ?? url.host;
-  return `${proto}://${host}`;
-}
 
 export const GET = guarded(async (_req, principal) => {
   const sources = await listWebhookSources(principal);

@@ -11,6 +11,14 @@ import { FullScreenOverlay } from '@/components/overlay/full-screen-overlay';
 import { Button, FieldError, FieldLabel, Input, Select } from '@/components/ui';
 import { api } from '@/lib/client-api';
 import type { SourceRow } from './intake-manager';
+import {
+  completedRules,
+  hasHalfDoneRule,
+  MappingRulesEditor,
+  ReferencePayload,
+  type DraftRule,
+  type MappingTarget,
+} from './mapping-rules';
 
 /**
  * THE admin-configurable space at the heart of this slice.
@@ -23,9 +31,9 @@ import type { SourceRow } from './intake-manager';
  * `packages/shared` — the same schema the worker parses with, so what this
  * editor saves is exactly what intake executes.
  *
- * The editor's reference material is `lastPayload` — the newest raw body this
- * source has received — rendered beside the rules so the Admin maps against
- * REAL keys, never remembered ones.
+ * The rule rows themselves are `MappingRulesEditor`, shared with the ARK
+ * mapping screen; what is specific to INTAKE is here — the targets are the
+ * module's live fields, and the campaign link has its own section.
  */
 
 /** The shared transform vocabulary, said in words. Keyed on the union so a
@@ -35,13 +43,6 @@ const TRANSFORM_LABEL: Record<IntakeTransform, string> = {
   trim: 'Trim whitespace',
   phone: 'Normalise phone',
 };
-
-/** A rule as the editor holds it — strings all the way, validated on save. */
-interface DraftRule {
-  source: string;
-  target: string;
-  transform: IntakeTransform;
-}
 
 interface ModuleField {
   key: string;
@@ -103,30 +104,21 @@ export function MappingEditorOverlay({ source, onSaved, onClose }: MappingEditor
   // The campaign link override only makes sense over RECORD_LINK fields; the
   // shared contract auto-detects when the module has exactly one.
   const linkFields = fields.filter((f) => f.type === 'RECORD_LINK');
-
-  function patchRule(index: number, patch: Partial<DraftRule>) {
-    setRules((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
-  }
-
-  function removeRule(index: number) {
-    setRules((prev) => prev.filter((_, i) => i !== index));
-  }
+  const targets: MappingTarget[] = fields.map((f) => ({ value: f.key, label: f.label }));
 
   function save() {
-    // A half-filled row is a decision the Admin has not finished making;
-    // silently dropping it would save a mapping they did not write.
-    const kept = rules.filter((r) => r.source.trim() !== '' || r.target !== '');
-    const halfDone = kept.some((r) => r.source.trim() === '' || r.target === '');
-    if (halfDone) {
+    if (hasHalfDoneRule(rules)) {
       setError('Every row needs both a payload path and a field — remove unfinished rows or complete them.');
       return;
     }
 
     const mapping: IntakeMapping = {
-      rules: kept.map((r) => ({
-        source: r.source.trim(),
+      rules: completedRules(rules).map((r) => ({
+        source: r.source,
         target: r.target,
-        transform: r.transform,
+        // The editor holds strings; the transform picker only ever offered
+        // members of INTAKE_TRANSFORMS, and the server re-validates anyway.
+        transform: r.transform as IntakeTransform,
       })),
       ...(campaignNameSource.trim() === '' ? {} : { campaignNameSource: campaignNameSource.trim() }),
       ...(campaignLinkField === '' ? {} : { campaignLinkField }),
@@ -147,8 +139,6 @@ export function MappingEditorOverlay({ source, onSaved, onClose }: MappingEditor
         setError(err instanceof Error ? err.message : 'The mapping could not be saved.');
       });
   }
-
-  const hasPayload = source.lastPayload !== null && source.lastPayload !== undefined;
 
   return (
     <FullScreenOverlay
@@ -182,91 +172,28 @@ export function MappingEditorOverlay({ source, onSaved, onClose }: MappingEditor
         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
           {/* ── the rules ─────────────────────────────────────────────── */}
           <div>
-            <h3 className="text-sm font-medium text-heading">Field rules</h3>
-            <p className="mt-1 text-xs text-body">
-              Each rule copies one value out of the payload into one field of{' '}
-              {source.moduleLabel}. The path is dot-separated into the JSON —{' '}
-              <code className="rounded bg-subtle px-1 font-mono">data.phone</code>,{' '}
-              <code className="rounded bg-subtle px-1 font-mono">answers.0.value</code>.
-            </p>
-
             {fieldsError !== null ? <FieldError>{fieldsError}</FieldError> : null}
 
-            <div className="mt-4 flex flex-col gap-3">
-              {rules.length === 0 ? (
-                <p className="rounded border border-border bg-background px-4 py-3 text-sm text-body">
-                  No rules yet — they get written the day the first payload shows its keys.
-                </p>
-              ) : null}
-
-              {rules.map((rule, index) => (
-                // Index keys are safe here: rows reorder only by removal, and
-                // a stable id would have to be invented per keystroke.
-                <div key={index} className="flex flex-wrap items-center gap-2">
-                  <Input
-                    value={rule.source}
-                    placeholder="payload path, e.g. data.phone"
-                    aria-label="Payload path"
-                    className="w-56 flex-1 font-mono"
-                    onChange={(e) => patchRule(index, { source: e.target.value })}
-                    data-track="settings.intake.mapping.rule.source.input"
-                  />
-                  <span aria-hidden="true" className="text-xs text-body">
-                    →
-                  </span>
-                  <Select
-                    value={rule.target}
-                    aria-label="Target field"
-                    className="w-52"
-                    disabled={fieldsLoading}
-                    onChange={(e) => patchRule(index, { target: e.target.value })}
-                    data-track="settings.intake.mapping.rule.field.select"
-                  >
-                    <option value="">{fieldsLoading ? 'Loading fields…' : 'Choose a field…'}</option>
-                    {fields.map((f) => (
-                      <option key={f.key} value={f.key}>
-                        {f.label}
-                      </option>
-                    ))}
-                  </Select>
-                  <Select
-                    value={rule.transform}
-                    aria-label="Transform"
-                    className="w-40"
-                    onChange={(e) => patchRule(index, { transform: e.target.value as IntakeTransform })}
-                    data-track="settings.intake.mapping.rule.transform.select"
-                  >
-                    {INTAKE_TRANSFORMS.map((t) => (
-                      <option key={t} value={t}>
-                        {TRANSFORM_LABEL[t]}
-                      </option>
-                    ))}
-                  </Select>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => removeRule(index)}
-                    aria-label="Remove this rule"
-                    data-track="settings.intake.mapping.rule.remove"
-                  >
-                    Remove
-                  </Button>
-                </div>
-              ))}
-
-              <div>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() =>
-                    setRules((prev) => [...prev, { source: '', target: '', transform: 'none' }])
-                  }
-                  data-track="settings.intake.mapping.rule.add"
-                >
-                  Add rule
-                </Button>
-              </div>
-            </div>
+            <MappingRulesEditor
+              rules={rules}
+              onChange={setRules}
+              targets={targets}
+              targetsLoading={fieldsLoading}
+              targetLabel="Target field"
+              targetPlaceholder="Choose a field…"
+              transforms={INTAKE_TRANSFORMS}
+              transformLabel={TRANSFORM_LABEL}
+              trackPrefix="settings.intake.mapping"
+              intro={
+                <>
+                  Each rule copies one value out of the payload into one field of{' '}
+                  {source.moduleLabel}. The path is dot-separated into the JSON —{' '}
+                  <code className="rounded bg-subtle px-1 font-mono">data.phone</code>,{' '}
+                  <code className="rounded bg-subtle px-1 font-mono">answers.0.value</code>.
+                </>
+              }
+              emptyText="No rules yet — they get written the day the first payload shows its keys."
+            />
 
             {/* ── the campaign link ─────────────────────────────────────── */}
             <div className="mt-8 border-t border-border pt-6">
@@ -327,24 +254,7 @@ export function MappingEditorOverlay({ source, onSaved, onClose }: MappingEditor
             </div>
           </div>
 
-          {/* ── the reference payload ───────────────────────────────────── */}
-          <div className="min-w-0">
-            <h3 className="text-sm font-medium text-heading">Reference payload</h3>
-            <p className="mt-1 text-xs text-body">
-              {hasPayload
-                ? 'The newest raw payload this source has received — map against these keys, not remembered ones.'
-                : 'Nothing has arrived on this source yet. The first payload — even a failed one — will appear here to map against.'}
-            </p>
-            {hasPayload ? (
-              <pre className="mt-3 max-h-[32rem] overflow-auto rounded-lg border border-border bg-background p-4 font-mono text-xs leading-5 text-heading">
-                {JSON.stringify(source.lastPayload, null, 2)}
-              </pre>
-            ) : (
-              <div className="mt-3 rounded-lg border border-dashed border-border bg-background px-4 py-8 text-center text-xs text-body">
-                Waiting for the first payload.
-              </div>
-            )}
-          </div>
+          <ReferencePayload payload={source.lastPayload} />
         </div>
       </div>
     </FullScreenOverlay>

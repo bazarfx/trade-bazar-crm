@@ -682,6 +682,17 @@ model WebhookSource {
   name          String
   slug          String   @unique
   tokenHash     String
+  /// WHAT posts here — 'CAMPAIGN' (a campaign platform, records created through
+  /// the intake mapping) or 'ARK' (the terminal's account events, run through the
+  /// conversion pipeline). A discriminator column rather than a name prefix: a
+  /// source's name is the Admin's to change, and the two kinds answer on
+  /// different endpoints, drain through different queues and hold different
+  /// mapping shapes. Values are fixed in `WEBHOOK_SOURCE_KINDS` (@crm/shared).
+  kind          String   @default("CAMPAIGN")
+  /// Per-source signing secret for the signature-verification slot in the
+  /// receivers. Null until a platform's auth scheme is known (ARK's is not);
+  /// never selected into a DTO, never snapshotted into the change log.
+  signingSecret String?
   moduleId      String
   /// { incomingKey: fieldKey } — editable in the UI, no deploy needed
   fieldMapping  Json     @default("{}")
@@ -707,6 +718,11 @@ model WebhookEvent {
   /// what it produced, if anything
   leadId       String?
   dealId       String?
+  /// WHICH of the pipeline's outcomes this event took (spec §7's four, as
+  /// `ARK_OUTCOMES` spells them). Null for campaign intake and for events that
+  /// never settled PROCESSED. A column, not a field in `error`: the events
+  /// screen filters on it, and the error column is for errors.
+  outcome      String?
   processedAt  DateTime?
   replayCount  Int           @default(0)
   createdAt    DateTime      @default(now())

@@ -9,8 +9,9 @@ import {
   userLabel,
 } from '@/app/(app)/[moduleSlug]/_components/directory';
 import { useSpecials } from '@/app/(app)/[moduleSlug]/_components/specials';
-import { cn, FieldLabel, Panel, PanelBody, PanelHeader, Select, StatusChip } from '@/components/ui';
+import { Button, cn, FieldLabel, Panel, PanelBody, PanelHeader, Select, StatusChip } from '@/components/ui';
 import { api } from '@/lib/client-api';
+import { TransferOwnershipOverlay } from './transfer-ownership-overlay';
 
 /**
  * Quick actions and notes — the right column of the record screen (spec §6.5).
@@ -18,14 +19,24 @@ import { api } from '@/lib/client-api';
  * Two actions live here: the status move an agent performs a hundred times a
  * day, and the owner. Both write through the door the rest of the system
  * already uses — the status through the SAME PATCH the form overlay uses, the
- * owner through the assign route the bulk action uses — so the audit entry and
- * the permission check are identical whichever surface the change came from. A
- * second write path is how a timeline starts missing lines.
+ * owner through the assign route the bulk action uses (or, for a record that
+ * is HANDED OVER rather than reassigned, the transfer route) — so the audit
+ * entry and the permission check are identical whichever surface the change
+ * came from. A second write path is how a timeline starts missing lines.
  *
  * The status options are the module's live statuses in the Admin's own order;
  * the owner options are the active users. Nothing here reads a status NAME, a
  * role name or a module slug.
  */
+
+/**
+ * How this module's owner moves. `reassign` is a lead changing hands between
+ * reps under REASSIGN_LEADS; `transfer` is a deal's customer being handed to
+ * someone else under TRANSFER_DEAL_OWNERSHIP, with its own timeline action.
+ * Decided by the page from the STORAGE SHAPE (a table with a Closed By
+ * column hands over; every other table reassigns), never from a slug.
+ */
+export type OwnerMode = 'reassign' | 'transfer';
 
 export interface QuickActionsProps {
   slug: string;
@@ -48,6 +59,7 @@ export interface QuickActionsProps {
   currentOwnerId: string | null;
   /** resolved server-side, so the control never paints a UUID */
   currentOwnerName: string | null;
+  ownerMode: OwnerMode;
   className?: string;
 }
 
@@ -62,6 +74,7 @@ export function QuickActions({
   ownerFieldLabel,
   currentOwnerId,
   currentOwnerName,
+  ownerMode,
   className,
 }: QuickActionsProps) {
   const router = useRouter();
@@ -152,13 +165,23 @@ export function QuickActions({
           </div>
 
           {ownerFieldLabel !== null ? (
-            <OwnerControl
-              slug={slug}
-              recordId={recordId}
-              label={ownerFieldLabel}
-              currentOwnerId={currentOwnerId}
-              currentOwnerName={currentOwnerName}
-            />
+            ownerMode === 'transfer' ? (
+              <TransferControl
+                slug={slug}
+                recordId={recordId}
+                label={ownerFieldLabel}
+                currentOwnerId={currentOwnerId}
+                currentOwnerName={currentOwnerName}
+              />
+            ) : (
+              <OwnerControl
+                slug={slug}
+                recordId={recordId}
+                label={ownerFieldLabel}
+                currentOwnerId={currentOwnerId}
+                currentOwnerName={currentOwnerName}
+              />
+            )
           ) : null}
         </PanelBody>
       </Panel>
@@ -179,6 +202,15 @@ export function QuickActions({
   );
 }
 
+interface OwnerControlProps {
+  slug: string;
+  recordId: string;
+  /** the Admin's own label for the owner field */
+  label: string;
+  currentOwnerId: string | null;
+  currentOwnerName: string | null;
+}
+
 /**
  * The owner, and the one control that moves it.
  *
@@ -193,15 +225,6 @@ export function QuickActions({
  * choice. The engine gave this record an owner the second it was created, and
  * the only thing this control can do is name a different one.
  */
-interface OwnerControlProps {
-  slug: string;
-  recordId: string;
-  /** the Admin's own label for the owner field */
-  label: string;
-  currentOwnerId: string | null;
-  currentOwnerName: string | null;
-}
-
 function OwnerControl({
   slug,
   recordId,
@@ -305,6 +328,70 @@ function OwnerControl({
         <p role="alert" className="mt-3 rounded bg-error/10 px-3 py-2 text-xs text-error">
           {error}
         </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The owner of a record that is HANDED OVER, not reassigned (spec §7.1).
+ *
+ * The name is read-only here; the move happens in a full-screen overlay
+ * through `POST .../transfer-owner`, under TRANSFER_DEAL_OWNERSHIP, with its
+ * own OWNERSHIP_TRANSFERRED entry and an optional reason. The door is drawn
+ * only for holders of that special — the server asserts it again.
+ */
+function TransferControl({
+  slug,
+  recordId,
+  label,
+  currentOwnerId,
+  currentOwnerName,
+}: OwnerControlProps) {
+  const router = useRouter();
+  const specials = useSpecials();
+  const canTransfer = specials.has('TRANSFER_DEAL_OWNERSHIP');
+  const [open, setOpen] = useState(false);
+  const shownName = currentOwnerName ?? currentOwnerId;
+
+  return (
+    <div>
+      {/* No `htmlFor`: there is no control here to point at, only a value. */}
+      <FieldLabel>{label}</FieldLabel>
+      <p className="truncate text-sm text-heading" title={shownName ?? undefined}>
+        {shownName ?? '—'}
+      </p>
+      {canTransfer ? (
+        <Button
+          variant="secondary"
+          size="sm"
+          className="mt-3"
+          onClick={() => setOpen(true)}
+          data-track={`${slug}.detail.transfer.open`}
+        >
+          Transfer ownership
+        </Button>
+      ) : (
+        <p className="mt-1 text-xs text-body">
+          Handed over by the handover rule; transferable by roles with <em>Transfer deal ownership</em>.
+        </p>
+      )}
+
+      {open ? (
+        <TransferOwnershipOverlay
+          slug={slug}
+          recordId={recordId}
+          ownerLabel={label}
+          currentOwnerId={currentOwnerId}
+          currentOwnerName={currentOwnerName}
+          onClose={() => setOpen(false)}
+          onTransferred={() => {
+            setOpen(false);
+            // The OWNERSHIP_TRANSFERRED entry belongs at the top of the log,
+            // and only the server can produce it.
+            router.refresh();
+          }}
+        />
       ) : null}
     </div>
   );

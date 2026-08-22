@@ -26,10 +26,12 @@ import 'server-only';
 import { createHash, randomBytes } from 'node:crypto';
 import { prisma, Prisma, type WebhookStatus } from '@crm/db';
 import {
+  CAMPAIGN_SOURCE_KIND,
   INTAKE_EVENT_PAGE_SIZE,
   INTAKE_PAYLOAD_PREVIEW_CHARS,
   REPLAYABLE_STATUSES,
   intakePath,
+  type WebhookSourceKind,
   type WebhookEventDto,
   type WebhookEventListDto,
   type WebhookSourceCreateInput,
@@ -55,7 +57,7 @@ import { enqueueIntake } from './queue';
  * `INTAKE_TOKEN_PATTERN` admits at the endpoint. Generated here, never chosen
  * by a client: a guessable token is a public write path into the CRM.
  */
-function generateToken(): string {
+export function generateToken(): string {
   return randomBytes(16).toString('hex');
 }
 
@@ -88,7 +90,7 @@ function slugFromName(name: string): string {
   return base || 'source';
 }
 
-async function uniqueSlug(tx: Tx, name: string): Promise<string> {
+export async function uniqueSlug(tx: Tx, name: string): Promise<string> {
   const base = slugFromName(name);
   const taken = new Set(
     (await tx.webhookSource.findMany({
@@ -111,6 +113,7 @@ const SOURCE_SELECT = {
   id: true,
   name: true,
   slug: true,
+  kind: true,
   moduleId: true,
   isActive: true,
   fieldMapping: true,
@@ -128,6 +131,7 @@ function toSourceDto(row: SourceRow): WebhookSourceDto {
     id: row.id,
     name: row.name,
     slug: row.slug,
+    kind: row.kind as WebhookSourceKind,
     moduleId: row.moduleId,
     moduleSlug: row.module.slug,
     moduleLabel: row.module.label,
@@ -163,9 +167,17 @@ async function snapshot(tx: Tx, id: string): Promise<unknown> {
 
 // ── reads ─────────────────────────────────────────────────────────────────
 
+/**
+ * Campaign sources only. ARK sources share the table (`kind = 'ARK'`) but
+ * hold an ARK mapping and drain through the conversion pipeline; they are
+ * read and replayed through `lib/ark/sources.ts`. Letting one through here
+ * would offer it the campaign mapping editor and the campaign replay queue —
+ * both the wrong shape for it.
+ */
 export async function listWebhookSources(principal: Principal): Promise<WebhookSourceDto[]> {
   assertConfigPermission(principal, 'WEBHOOK_SOURCE');
   const rows = await prisma.webhookSource.findMany({
+    where: { kind: CAMPAIGN_SOURCE_KIND },
     orderBy: { createdAt: 'desc' },
     select: SOURCE_SELECT,
   });
@@ -173,10 +185,14 @@ export async function listWebhookSources(principal: Principal): Promise<WebhookS
 }
 
 /** Assert first, resolve second: to a caller without the special, an unknown
- *  source and a forbidden one must be indistinguishable. */
+ *  source and a forbidden one must be indistinguishable. An ARK source is
+ *  "unknown" here for the reason `listWebhookSources` gives. */
 async function requireSource(principal: Principal, id: string): Promise<SourceRow> {
   assertConfigPermission(principal, 'WEBHOOK_SOURCE');
-  const row = await prisma.webhookSource.findUnique({ where: { id }, select: SOURCE_SELECT });
+  const row = await prisma.webhookSource.findFirst({
+    where: { id, kind: CAMPAIGN_SOURCE_KIND },
+    select: SOURCE_SELECT,
+  });
   if (!row) throw new ConfigError('Unknown webhook source', 404, 'NOT_FOUND');
   return row;
 }
@@ -215,6 +231,7 @@ export async function createWebhookSource(
           name: input.name,
           slug: await uniqueSlug(tx, input.name),
           tokenHash,
+          kind: CAMPAIGN_SOURCE_KIND,
           moduleId: module.id,
           isActive: input.isActive,
           // Empty on purpose. The mapping is THE SPACE left for the unknown
@@ -279,7 +296,9 @@ export async function updateWebhookSource(
 
 // ── events ────────────────────────────────────────────────────────────────
 
-const EVENT_SELECT = {
+/** Shared with `lib/ark/sources.ts`: both kinds of source keep their events
+ *  in the same table and show them the same way. */
+export const EVENT_SELECT = {
   id: true,
   sourceId: true,
   raw: true,
@@ -287,12 +306,13 @@ const EVENT_SELECT = {
   error: true,
   leadId: true,
   dealId: true,
+  outcome: true,
   replayCount: true,
   createdAt: true,
   processedAt: true,
 } satisfies Prisma.WebhookEventSelect;
 
-type EventRow = Prisma.WebhookEventGetPayload<{ select: typeof EVENT_SELECT }>;
+export type EventRow = Prisma.WebhookEventGetPayload<{ select: typeof EVENT_SELECT }>;
 
 /**
  * The list form of a payload: whole when it is small, a preview object when
@@ -313,7 +333,7 @@ function previewPayload(raw: unknown): { payload: unknown; payloadTruncated: boo
   };
 }
 
-function toEventDto(row: EventRow, full: boolean): WebhookEventDto {
+export function toEventDto(row: EventRow, full: boolean): WebhookEventDto {
   const body = full ? { payload: row.raw, payloadTruncated: false } : previewPayload(row.raw);
   return {
     id: row.id,
@@ -323,6 +343,7 @@ function toEventDto(row: EventRow, full: boolean): WebhookEventDto {
     ...body,
     recordId: row.leadId,
     dealId: row.dealId,
+    outcome: row.outcome,
     replayCount: row.replayCount,
     receivedAt: row.createdAt.toISOString(),
     processedAt: row.processedAt?.toISOString() ?? null,

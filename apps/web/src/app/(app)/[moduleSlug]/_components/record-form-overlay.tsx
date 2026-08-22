@@ -96,16 +96,32 @@ export interface RecordFormOverlayProps {
    * forbids and which a rename would break.
    */
   systemColumns: Record<string, string | null>;
+  /**
+   * Fields this form shows but may never write, with the reason a person
+   * reads — Closed By on a deal ("permanent credit"), the ledger-derived
+   * totals. Decided by the caller from the STORAGE SHAPE, never from a field
+   * name: the server strips these columns from every write, and the form's
+   * job is to say so rather than offer a control that silently does nothing.
+   */
+  locked?: readonly LockedField[];
   /** Present ⇒ edit that record. Absent ⇒ create a new one. */
   recordId?: string;
   onClose: () => void;
   onSaved?: (recordId: string) => void;
 }
 
+export interface LockedField {
+  key: string;
+  reason: string;
+}
+
+const NO_LOCKS: readonly LockedField[] = [];
+
 export function RecordFormOverlay({
   slug,
   label,
   systemColumns,
+  locked = NO_LOCKS,
   recordId,
   onClose,
   onSaved,
@@ -187,6 +203,7 @@ export function RecordFormOverlay({
           slug={slug}
           label={label}
           systemColumns={systemColumns}
+          locked={locked}
           config={config}
           recordId={recordId}
           onClose={onClose}
@@ -226,6 +243,7 @@ interface RecordFormProps {
   slug: string;
   label: string;
   systemColumns: Record<string, string | null>;
+  locked: readonly LockedField[];
   config: FormConfig;
   recordId: string | undefined;
   onClose: () => void;
@@ -236,6 +254,7 @@ function RecordForm({
   slug,
   label,
   systemColumns,
+  locked,
   config,
   recordId,
   onClose,
@@ -246,8 +265,8 @@ function RecordForm({
   const [formError, setFormError] = useState<string | null>(null);
 
   const prepared = useMemo(
-    () => prepare(config, systemColumns, isCreate),
-    [config, systemColumns, isCreate],
+    () => prepare(config, systemColumns, isCreate, locked),
+    [config, systemColumns, isCreate, locked],
   );
 
   const {
@@ -462,8 +481,10 @@ function prepare(
   config: FormConfig,
   systemColumns: Record<string, string | null>,
   isCreate: boolean,
+  locked: readonly LockedField[],
 ): Prepared {
   const byKey = new Map(config.fields.map((f) => [f.key, f]));
+  const lockReason = new Map(locked.map((l) => [l.key, l.reason]));
 
   const statusOptions: PicklistOption[] = config.statuses
     .filter((s) => !s.isDeleted)
@@ -542,6 +563,7 @@ function prepare(
             ? 'Assigned automatically if you leave this blank.'
             : 'Opens in the first status if you leave this blank.'
           : null,
+        locked: lockedDisplay(lockReason.get(dto.key), options, stored),
       };
 
       prepared.push({
@@ -551,7 +573,9 @@ function prepare(
         colSpan: Math.min(Math.max(1, ref.colSpan), columns),
       });
 
-      if (isWritable(dto)) {
+      // A locked field is shown and never registered: it cannot enter the
+      // payload, the schema or the dirty check.
+      if (isWritable(dto) && field.locked === null) {
         writableKeys.push(dto.key);
         if (dto.type === 'PHONE') phoneKeys.add(dto.key);
         defs.push({
@@ -591,6 +615,30 @@ function isWritable(dto: FieldDto): boolean {
   // See `linkOptions` above — no resolvable target, no value.
   if (dto.type === 'RECORD_LINK') return false;
   return true;
+}
+
+/**
+ * What a LOCKED field shows: the stored value as a person reads it — the
+ * option's or user's label when the value is one, the raw value otherwise,
+ * a dash when empty — with the caller's reason beside it.
+ */
+function lockedDisplay(
+  reason: string | undefined,
+  options: PicklistOption[],
+  stored: unknown,
+): FormField['locked'] {
+  if (reason === undefined) return null;
+  const label =
+    typeof stored === 'string' ? (options.find((o) => o.value === stored)?.label ?? stored) : null;
+  const display =
+    label !== null && label !== ''
+      ? label
+      : typeof stored === 'number' || typeof stored === 'boolean'
+        ? String(stored)
+        : stored === null || stored === undefined || stored === ''
+          ? '—'
+          : String(stored);
+  return { display, reason };
 }
 
 /** Keep a value the record already holds selectable, whatever config says now. */

@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { prisma } from '@crm/db';
+import { CAMPAIGN_SOURCE_KIND } from '@crm/shared';
 import { getPrincipal } from '@/lib/auth/session';
 import {
   IntakeManager,
@@ -38,6 +39,10 @@ export default async function IntakeSettingsPage() {
 
   const [sources, modules, countRows] = await Promise.all([
     prisma.webhookSource.findMany({
+      // Campaign sources only: ARK sources share the table but carry an ARK
+      // mapping and drain through the conversion pipeline, so they are not
+      // this screen's to edit (their mapping editor would write the wrong shape).
+      where: { kind: CAMPAIGN_SOURCE_KIND },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,

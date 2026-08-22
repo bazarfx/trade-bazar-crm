@@ -57,6 +57,14 @@ export interface FormField {
   linkOptions: PicklistOption[] | null;
   /** An extra line under the label, e.g. why a required field may be left blank. */
   hint: string | null;
+  /**
+   * A value this form may SHOW but never WRITE — Closed By on a deal, the
+   * ledger-derived totals. Rendered as a disabled, read-only control with a
+   * lock and the reason, and left out of the payload and the schema entirely.
+   * The server strips these columns from every write regardless; this is the
+   * form being honest about it rather than offering a control that lies.
+   */
+  locked: { display: string; reason: string } | null;
 }
 
 /** Placeholders, verbatim from the Create Leads frame. */
@@ -134,6 +142,21 @@ export function FieldControl({ slug, field, register, control, error }: FieldCon
   );
 
   function renderControl(): ReactNode {
+    // Deliberately NOT registered, like FILE below: a locked value is shown
+    // for orientation and can never be part of the payload.
+    if (field.locked !== null) {
+      return (
+        <Input
+          id={id}
+          disabled
+          readOnly
+          value={field.locked.display}
+          title={field.locked.reason}
+          data-track={track}
+        />
+      );
+    }
+
     switch (field.type) {
       case 'SINGLE_LINE':
       case 'EMAIL':
@@ -354,7 +377,16 @@ export function FieldControl({ slug, field, register, control, error }: FieldCon
     <p className="mb-1.5 text-xs text-body">{field.helpText}</p>
   ) : null;
 
-  const hint = field.hint ? <p className="mt-1 text-xs text-muted">{field.hint}</p> : null;
+  const hint = field.locked ? (
+    // The lock is the reason made visible; the reason is the lock made
+    // readable. Both, because a greyed-out control alone reads as broken.
+    <p className="mt-1 flex items-center gap-1 text-xs text-muted">
+      <span aria-hidden="true">🔒</span>
+      <span>{field.locked.reason}</span>
+    </p>
+  ) : field.hint ? (
+    <p className="mt-1 text-xs text-muted">{field.hint}</p>
+  ) : null;
 
   // A checkbox carries its own caption, so a FieldLabel above it would print
   // the field's name twice.

@@ -1,5 +1,5 @@
 import { Queue, type JobsOptions } from 'bullmq';
-import { CAMPAIGN_INTAKE_QUEUE, IMPORT_QUEUE } from '@crm/shared';
+import { ARK_WEBHOOK_QUEUE, CAMPAIGN_INTAKE_QUEUE, IMPORT_QUEUE } from '@crm/shared';
 import { connection } from './redis.js';
 
 /**
@@ -13,8 +13,9 @@ import { connection } from './redis.js';
 export const QUEUE = {
   /** Layer C. Batched click/view events. ~3.6M rows a month. */
   INTERACTION_LOGS: 'interaction-logs',
-  /** ARK Terminal account-creation webhooks — the only conversion path. */
-  ARK_WEBHOOK: 'ark-webhook',
+  /** ARK Terminal account-creation webhooks — the only conversion path.
+   *  Named in `@crm/shared` because the enqueuer is the public ARK endpoint. */
+  ARK_WEBHOOK: ARK_WEBHOOK_QUEUE,
   /** Campaign leads arriving via Integrately. Named in `@crm/shared` for the
    *  same reason as IMPORTS: the enqueuer is the public intake endpoint. */
   CAMPAIGN_INTAKE: CAMPAIGN_INTAKE_QUEUE,
