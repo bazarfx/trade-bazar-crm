@@ -10,6 +10,8 @@ import { resolveModuleLayout } from '@/lib/config/layouts';
 import { ConfigError } from '@/lib/config/service';
 import { coreModuleStorages, storageFor } from '@/lib/records/list';
 import { getRecord, getTimeline } from '@/lib/records/service';
+import { assertPeopleModule, personWorkload } from '@/lib/records/workload';
+import type { PersonWorkload, WorkloadModule } from '@crm/shared';
 import { Avatar, StatusChip } from '@/components/ui';
 import { demoAvatarFor } from '@/components/demo-avatar';
 import { AnalyticsPanel } from './_components/analytics-panel';
@@ -17,9 +19,11 @@ import { changeEntries } from './_components/changes';
 import { DepositsPanel } from './_components/deposits-panel';
 import { DetailActions } from './_components/detail-actions';
 import { InfoPanel, type InfoSection, type LockedValue } from './_components/info-panel';
+import { OwnedRecordsPanel, type OwnedModuleTable } from './_components/owned-records-panel';
 import { QuickActions, type OwnerMode } from './_components/quick-actions';
 import { TimelinePanel, type InheritedFrom, type TimelineRow } from './_components/timeline-panel';
 import type { DetailField } from './_components/value';
+import { WorkloadPanel } from './_components/workload-panel';
 
 /**
  * THE record detail screen. One page serves /leads/<id>, /deals/<id> and every
@@ -127,6 +131,153 @@ async function visibleFields(
       systemColumn: f.systemColumn,
       options: refOptions.get(f.key) ?? f.options,
     }));
+}
+
+/**
+ * This person's workload, or null when this record is not a person.
+ *
+ * THE GATE IS STRUCTURAL, NOT A SLUG. `assertPeopleModule` compares storage
+ * DELEGATES: the people table is whatever every `ownerColumn` foreign key
+ * points at, so renaming Users to "Staff" changes nothing here and a lead is
+ * refused for a reason that survives any amount of Admin renaming. It is the
+ * same gate `GET …/workload` applies, one hop earlier.
+ *
+ * WHY THIS IS READ ON THE SERVER rather than probed from the browser the way
+ * `DepositsPanel` and `AnalyticsPanel` probe theirs: the assigned-records
+ * table underneath needs each module's OWNER FIELD KEY, which is resolved from
+ * `FieldDefinition.systemColumn` — server-side config that no route exposes
+ * and that nothing may guess (a deal has two USER_LOOKUP fields, and the wrong
+ * one is Closed By). Since the page must read that here anyway, reading the
+ * counts here too costs one query set instead of two and puts the numbers in
+ * the first paint. The route stays the live contract: the panel's Refresh
+ * re-reads it, and a 404 from it still blanks the panel.
+ *
+ * 404 and 403 both mean "not for you" and both mean "draw nothing" — the same
+ * rule `loadRecord` above follows. Anything else is a real fault.
+ */
+async function loadWorkload(
+  principal: Principal,
+  slug: string,
+  recordId: string,
+): Promise<PersonWorkload | null> {
+  try {
+    await assertPeopleModule(slug);
+    return await personWorkload(principal, recordId);
+  } catch (err) {
+    if (err instanceof ConfigError && (err.status === 404 || err.status === 403)) return null;
+    throw err;
+  }
+}
+
+/**
+ * How many columns the assigned-records table draws.
+ *
+ * It is a summary on somebody else's page, not the module's list screen: six
+ * fields identify a record and fit the panel without a horizontal scroll, and
+ * the other thirty are one row click away.
+ */
+const OWNED_TABLE_COLUMNS = 6;
+
+/**
+ * What the assigned-records table needs to draw each module this person owns
+ * records in — resolved from CONFIG and STORAGE, never from a module name.
+ *
+ * Three batched queries for every module at once, not three per module. Each
+ * module contributes a tab only if it clears two structural tests:
+ *
+ *   1. its storage shape declares an `ownerColumn` — otherwise its rows are
+ *      not owned by anyone and "assigned to this person" has no meaning;
+ *   2. a field this role may SEE maps to that column. A role the matrix hides
+ *      the owner field from cannot be handed a filter on it: hiding a field in
+ *      the UI is not a security control, and offering the filter anyway would
+ *      make the matrix cosmetic. Dropping the module is the fail-closed answer.
+ *
+ * The owner field is then removed from the columns. Every row in this table
+ * has the same owner by construction, so it would be a column of one repeated
+ * name where a differing field could have gone.
+ */
+async function ownedModuleTables(
+  engine: PermissionEngine,
+  owns: WorkloadModule[],
+): Promise<OwnedModuleTable[]> {
+  if (owns.length === 0) return [];
+
+  const mods = await prisma.moduleDefinition.findMany({
+    where: { slug: { in: owns.map((o) => o.slug) }, isEnabled: true },
+    select: { id: true, slug: true, isCore: true, recordTitleField: true },
+  });
+  if (mods.length === 0) return [];
+  const moduleIds = mods.map((m) => m.id);
+
+  const [fieldRows, statusRows] = await Promise.all([
+    prisma.fieldDefinition.findMany({
+      // Soft-deleted config stays in the table forever (invariant 4) and must
+      // never come back as a column.
+      where: { moduleId: { in: moduleIds }, isDeleted: false },
+      orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+      select: {
+        moduleId: true, key: true, label: true, type: true, systemColumn: true,
+        options: { select: { value: true, label: true }, orderBy: { displayOrder: 'asc' } },
+      },
+    }),
+    // Deleted statuses INCLUDED: retiring a status does not move the records
+    // sitting on it, and a chip that fell back to a raw id would be the one
+    // cell on the page nobody can read.
+    prisma.status.findMany({
+      where: { moduleId: { in: moduleIds } },
+      orderBy: { displayOrder: 'asc' },
+      select: { moduleId: true, id: true, name: true, tag: true, color: true },
+    }),
+  ]);
+
+  const tables: OwnedModuleTable[] = [];
+  // `owns` arrives in the Admin's own nav order; the tabs keep it.
+  for (const entry of owns) {
+    const owned = mods.find((m) => m.slug === entry.slug);
+    if (!owned) continue;
+
+    // Which physical column carries the owner is a STORAGE fact, asked of the
+    // shape exactly as this page asks it for the record it is drawing.
+    const ref = { id: owned.id, slug: owned.slug, isCore: owned.isCore };
+    const ownerColumn = storageFor(ref, []).shape.ownerColumn;
+    if (ownerColumn === null) continue;
+
+    const hidden = engine.hiddenFields(owned.slug);
+    const visible = fieldRows.filter((f) => f.moduleId === owned.id && !hidden.has(f.key));
+    const ownerField = visible.find((f) => f.systemColumn === ownerColumn);
+    if (!ownerField) continue;
+
+    const rest = visible.filter((f) => f.key !== ownerField.key);
+    // `recordTitleField` names the field that IS the record's identity — never
+    // a hardcoded `name`. It can be hidden from this role, in which case no
+    // column claims the avatar and none is pinned.
+    const titleField = rest.find((f) => f.key === owned.recordTitleField);
+    const ordered = titleField
+      ? [titleField, ...rest.filter((f) => f.key !== titleField.key)]
+      : rest;
+
+    tables.push({
+      slug: entry.slug,
+      label: entry.label,
+      labelPlural: entry.labelPlural,
+      total: entry.total,
+      ownerFieldKey: ownerField.key,
+      ownerFieldType: ownerField.type,
+      titleFieldKey: titleField?.key ?? null,
+      columns: ordered.slice(0, OWNED_TABLE_COLUMNS).map((f) => ({
+        key: f.key,
+        label: f.label,
+        type: f.type,
+        systemColumn: f.systemColumn,
+        options: f.options,
+      })),
+      statuses: statusRows
+        .filter((s) => s.moduleId === owned.id)
+        .map((s) => ({ id: s.id, name: s.name, tag: s.tag, color: s.color })),
+    });
+  }
+
+  return tables;
 }
 
 export default async function RecordDetailPage({
@@ -307,6 +458,14 @@ export default async function RecordDetailPage({
 
   const timelineEntries: TimelineRow[] = timeline.entries;
 
+  // ── what this record shows because it is a PERSON ──────────────────────
+  // Same principle as the ledger, the analytics and the inherited timeline
+  // above: the page asks the STORAGE what this record is, and draws what the
+  // answer implies. Null here means "the owner foreign keys do not point at
+  // this table", which is the only definition of a person the engine has.
+  const workload = await loadWorkload(principal, mod.slug, record.id);
+  const ownedTables = workload === null ? [] : await ownedModuleTables(engine, workload.owns);
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -360,11 +519,37 @@ export default async function RecordDetailPage({
         />
       </div>
 
+      {/* The person view: what they are carrying, then which records those
+          are. Full width and directly under the header because the client's
+          ask was that "everything must be visible at once" — no tabs, no
+          drill-down. Both render only when this record is a person; on every
+          other module `workload` is null and neither exists. */}
+      {workload !== null ? (
+        <WorkloadPanel slug={mod.slug} recordId={record.id} initial={workload} />
+      ) : null}
+      {ownedTables.length > 0 ? (
+        <OwnedRecordsPanel slug={mod.slug} personId={record.id} modules={ownedTables} />
+      ) : null}
+
       {/* Three columns, each scrolling its own content so the page itself never
           grows: a 40-field record must not push the timeline below the fold,
           and a two-year timeline must not push the quick actions off screen.
-          Expressed against the viewport like the list screen's panels. */}
-      <div className="flex h-[calc(100vh-9.5rem)] items-stretch gap-6">
+          Expressed against the viewport like the list screen's panels.
+
+          EXCEPT on a person, where the page above these columns already
+          scrolls: pinning them to the viewport there would leave a full screen
+          of whitespace under the assigned-records table before the timeline
+          began. The timeline stays exactly where it is — on a person it is
+          their audit trail, which belongs beside their numbers. */}
+      {/* The class is joined inline rather than with `cn`: every export of a
+          `'use client'` module is a client reference, so this SERVER component
+          calling that helper throws at render — the warning `cn`'s own
+          definition carries. Two branches need no helper anyway. */}
+      <div
+        className={`flex items-stretch gap-6 ${
+          workload !== null ? 'h-[42rem]' : 'h-[calc(100vh-9.5rem)]'
+        }`}
+      >
         <InfoPanel
           title={`${mod.label} information`}
           sections={sections}

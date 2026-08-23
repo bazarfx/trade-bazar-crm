@@ -14,4 +14,5 @@ export * from './imports.js';
 export * from './intake.js';
 export * from './duplicates.js';
 export * from './conversion.js';
+export * from './workload.js';
 export * from './ark.js';

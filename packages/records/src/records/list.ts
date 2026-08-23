@@ -1027,8 +1027,15 @@ function userWhereFor(
  * because there is no key a user filter can reach to overwrite.
  *
  * If a future refactor is tempted to flatten this for readability: don't.
+ *
+ * EXPORTED for the other scoped readers that build a `where` beside
+ * `scopedWhere` rather than through `listRecords` — the workload counts are
+ * the current case, and their extra condition is `ownerId = <person>`, which
+ * is EXACTLY the key a spread would overwrite. Anything narrowing a scoped
+ * query must come through here; a second copy of this rule is a second place
+ * for it to be got wrong.
  */
-function combine(scope: Row, user: Row): Row {
+export function combine(scope: Row, user: Row): Row {
   if (Object.keys(user).length === 0) return scope;
   return { AND: [scope, user] };
 }

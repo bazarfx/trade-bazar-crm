@@ -55,6 +55,19 @@ const TAG_TONE: Record<StatusTagValue, ChipTone> = {
   SIGNED_UP: 'neutral',
 };
 
+/**
+ * The tone a tag reads as, for anything that paints a status WITHOUT drawing a
+ * chip — a pipeline bar, a legend swatch.
+ *
+ * Exported so those callers reuse THIS table instead of writing a second one:
+ * a duplicate would drift the first time a tag is added or re-toned, and the
+ * bar would then disagree with the chip beside it about what "Hot" looks like.
+ * `?? 'neutral'` guards a tag value the enum grew after this build shipped.
+ */
+export function toneForTag(tag: StatusTagValue): ChipTone {
+  return TAG_TONE[tag] ?? 'neutral';
+}
+
 const HEX = /^#[0-9a-fA-F]{6}$/;
 
 /**
@@ -77,9 +90,8 @@ export function StatusChip({ name, tag, color, className }: StatusChipProps) {
   const custom = typeof color === 'string' && HEX.test(color) ? color : null;
 
   if (custom === null) {
-    // `?? 'neutral'` guards a tag value the enum grew after this build shipped.
     return (
-      <Chip tone={TAG_TONE[tag] ?? 'neutral'} title={name} className={className}>
+      <Chip tone={toneForTag(tag)} title={name} className={className}>
         {name}
       </Chip>
     );
