@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState, type MouseEvent } from 'react';
 import { SPECIAL_PERMISSIONS } from '@crm/shared';
 import { FullScreenOverlay } from '@/components/overlay/full-screen-overlay';
 import {
+  Popup,
+  PopupFooter,
   Button,
   Chip,
   DataTable,
@@ -32,6 +34,7 @@ import { messageOf, TRACK, type RoleDto, type RoleRow } from './wire';
 
 type Overlay =
   | { kind: 'create' }
+  | { kind: 'rename'; role: RoleRow }
   | { kind: 'matrix'; role: RoleRow }
   | { kind: 'delete'; role: RoleRow };
 
@@ -108,15 +111,31 @@ export function RolesManager() {
       // server will always refuse teaches the Admin to ignore refusals.
       if (role.isLocked) return <span className="text-body">—</span>;
       return (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={(e) => openDelete(e, role)}
-          data-track={`${TRACK}.row.delete`}
-          className="px-0 hover:text-error"
-        >
-          Delete
-        </Button>
+        <span className="flex items-center gap-3">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={(e) => {
+              // The row itself opens the matrix, so a control inside it must
+              // not also trigger that.
+              e.stopPropagation();
+              setOverlay({ kind: 'rename', role });
+            }}
+            data-track={`${TRACK}.row.rename`}
+            className="px-0"
+          >
+            Rename
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={(e) => openDelete(e, role)}
+            data-track={`${TRACK}.row.delete`}
+            className="px-0 hover:text-error"
+          >
+            Delete
+          </Button>
+        </span>
       );
     }
     return String(role[column.key] ?? '—');
@@ -185,6 +204,18 @@ export function RolesManager() {
 
       {overlay?.kind === 'create' && (
         <CreateRoleOverlay onCreate={handleCreate} onClose={() => setOverlay(null)} />
+      )}
+
+      {overlay?.kind === 'rename' && (
+        <RenameRoleOverlay
+          role={overlay.role}
+          onRenamed={async (name) => {
+            setOverlay(null);
+            setNotice(`Role renamed to "${name}".`);
+            await refresh();
+          }}
+          onClose={() => setOverlay(null)}
+        />
       )}
 
       {overlay?.kind === 'matrix' && (
@@ -411,5 +442,94 @@ function DeleteRoleOverlay({
         </div>
       </div>
     </FullScreenOverlay>
+  );
+}
+
+/**
+ * Rename.
+ *
+ * Nothing in the system reads a role NAME — permissions are held by id, the
+ * assignment engine points at `assignment.seniorRoleId`, and `isAdmin` keys
+ * off `isLocked`. So renaming "Tele Sales" to "Telesellers" changes a label
+ * and nothing else, which is exactly what the create dialog already promises
+ * and what this dialog makes true.
+ *
+ * A 511 pop-up, not a full-screen surface: the file draws "Edit Name of Save
+ * Filter" at 511, and a single text field is the same shape of task.
+ */
+function RenameRoleOverlay({
+  role,
+  onRenamed,
+  onClose,
+}: {
+  role: RoleRow;
+  onRenamed: (name: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(role.name);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const trimmed = name.trim();
+  const unchanged = trimmed === role.name;
+
+  function submit() {
+    if (trimmed === '') {
+      setError('Role name is required');
+      return;
+    }
+    if (unchanged) {
+      onClose();
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    api<{ role: RoleDto }>(`/api/roles/${role.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: trimmed }),
+    })
+      .then(() => onRenamed(trimmed))
+      // A 409 is a clash with another role — including a SOFT-DELETED one,
+      // which keeps its name. The server says which; do not paraphrase it.
+      .catch((err: unknown) => {
+        setError(messageOf(err));
+        setBusy(false);
+      });
+  }
+
+  return (
+    <Popup
+      open
+      title="Rename role"
+      width={511}
+      onClose={onClose}
+      trackPrefix={`${TRACK}.rename`}
+      footer={
+        <PopupFooter
+          trackPrefix={`${TRACK}.rename`}
+          cancel={{ label: 'Cancel', onClick: onClose }}
+          next={{ label: busy ? 'Saving…' : 'Save', onClick: submit, disabled: busy }}
+        />
+      }
+    >
+      <FieldLabel htmlFor="role-rename" required>
+        Role name
+      </FieldLabel>
+      <Input
+        id="role-rename"
+        value={name}
+        maxLength={60}
+        autoFocus
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') submit();
+        }}
+        data-track={`${TRACK}.rename.name.input`}
+      />
+      <FieldError>{error}</FieldError>
+      <p className="mt-3 text-xs text-body">
+        Permissions, members and history are held by id, so a rename changes the label only.
+      </p>
+    </Popup>
   );
 }
