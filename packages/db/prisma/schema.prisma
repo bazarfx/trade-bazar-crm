@@ -120,6 +120,7 @@ enum AuditAction {
   DUPLICATE_RESOLVED
   USER_LOGIN
   USER_LOGOUT
+  PASSWORD_RESET
   CONFIG_CHANGED
 }
 
@@ -231,8 +232,9 @@ model FormSection {
   moduleId      String
   label         String
   displayOrder  Int     @default(0)
-  /// 1-3 column grid inside the section card
-  columns       Int     @default(3)
+  /// 1-4 column grid inside the section. Four is the measured default —
+  /// see `sectionCreateSchema` in @crm/shared.
+  columns       Int     @default(4)
   isCollapsible Boolean @default(false)
   isDeleted     Boolean @default(false)
 
@@ -421,6 +423,9 @@ model User {
   /// multi-select — a user may speak several
   languages    String[] @default([])
   isActive     Boolean  @default(true)
+  /// stamped by a password reset; access tokens issued before it are refused,
+  /// so "signed out everywhere" is true the moment the reset commits
+  credentialsChangedAt DateTime?
 
   // ── everything Admin-created ─────────────────────────────────────
   custom Json @default("{}")
@@ -586,12 +591,23 @@ model Deposit {
   depositedAt    DateTime
   /// links back to the raw webhook payload that produced this row
   webhookEventId String?
+  /// WHAT MAKES A REDELIVERY HARMLESS. `webhookEventId` is OUR id, minted
+  /// fresh on every POST, so it identifies a replay of a STORED event but not
+  /// a redelivery from ARK — which arrives as a second event and would post
+  /// the same money twice. This key is derived from the EVENT ITSELF (ARK's
+  /// own reference when the mapping names one, else a fingerprint of the
+  /// deposit's own facts), so both copies compute the same value and the
+  /// unique index below refuses the second insert in the database rather than
+  /// in a check that two concurrent workers can both pass.
+  /// Null for hand-entered rows, which no webhook can duplicate.
+  dedupeKey      String?
   isFtd          Boolean  @default(false)
   createdAt      DateTime @default(now())
 
   deal         Deal          @relation(fields: [dealId], references: [id], onDelete: Cascade)
   webhookEvent WebhookEvent? @relation(fields: [webhookEventId], references: [id], onDelete: SetNull)
 
+  @@unique([dealId, dedupeKey])
   @@index([dealId, depositedAt])
 }
 
@@ -693,6 +709,19 @@ model WebhookSource {
   /// receivers. Null until a platform's auth scheme is known (ARK's is not);
   /// never selected into a DTO, never snapshotted into the change log.
   signingSecret String?
+  /// HOW this source signs, held as DATA rather than as a constant in code.
+  /// ARK's scheme is still unspecified, and the three fields below are what
+  /// differs between every scheme in the wild: which header carries the
+  /// digest, how it is encoded, and what prefix it wears ("sha256=", say).
+  /// Configured per source so switching verification on is a form an Admin
+  /// fills in, never a deploy — and so one partner sending signatures cannot
+  /// force every other source to start sending them too.
+  /// Verification is enforced only when the header, the algorithm and the
+  /// secret are all present; short of that this source stays token-only.
+  signatureHeader    String?
+  signatureAlgorithm String?
+  signatureFormat    String?
+  signaturePrefix    String?
   moduleId      String
   /// { incomingKey: fieldKey } — editable in the UI, no deploy needed
   fieldMapping  Json     @default("{}")

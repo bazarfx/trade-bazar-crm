@@ -134,14 +134,22 @@ async function main() {
   console.log(`  deal statuses      ${DEAL_STATUSES.length}`);
 
   // ── sections + fields ────────────────────────────────────────────
-  async function seedFields(slug: string, fields: typeof LEAD_FIELDS, sections: readonly string[]) {
+  // `columns` is the section grid a FRESH install starts from — an existing
+  // section is never touched, because its column count is the Admin's to
+  // change from the layout editor.
+  async function seedFields(
+    slug: string,
+    fields: typeof LEAD_FIELDS,
+    sections: readonly string[],
+    columns = 4,
+  ) {
     const moduleId = modules.get(slug)!;
     const sectionIds = new Map<string, string>();
 
     for (const [i, label] of sections.entries()) {
       const existing = await prisma.formSection.findFirst({ where: { moduleId, label } });
       const row = existing ?? (await prisma.formSection.create({
-        data: { moduleId, label, displayOrder: i, columns: 3 },
+        data: { moduleId, label, displayOrder: i, columns },
       }));
       sectionIds.set(label, row.id);
     }
@@ -199,7 +207,8 @@ async function main() {
   }
 
   await seedFields('leads', LEAD_FIELDS, LEAD_SECTIONS);
-  await seedFields('users', USER_FIELDS, ['User Information']);
+  // 2 columns: the account form is a two-column layout (client request).
+  await seedFields('users', USER_FIELDS, ['User Information'], 2);
   await seedFields('deals', DEAL_FIELDS, ['Deal Information']);
   await seedFields('campaigns', CAMPAIGN_FIELDS, ['Campaign Information']);
 
