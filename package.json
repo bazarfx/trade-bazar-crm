@@ -23,7 +23,10 @@
     "db:seed": "tsx --env-file=.env packages/db/src/seed.ts",
     "db:seed:demo": "tsx --env-file=.env packages/db/src/seed-demo.ts",
     "db:studio": "prisma studio --schema packages/db/prisma/schema.prisma",
-    "figma:tokens": "node tools/figma/extract-tokens.js"
+    "figma:tokens": "node tools/figma/extract-tokens.js",
+    "test": "tsx --test tests/*.test.ts",
+    "postinstall": "prisma generate --schema packages/db/prisma/schema.prisma",
+    "vercel-build": "npm run build --workspace=apps/web"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

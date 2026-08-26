@@ -102,6 +102,40 @@ DIRECT_URL="postgresql://crm_app.<ref>:<pw>@<host-from-dashboard>.pooler.supabas
 ```
 Only move `DATABASE_URL` to `:6543` if you later put the web tier on a serverless host; then add `&pgbouncer=true` and size `connection_limit` down.
 
+### A3b. Vercel (testing tier) — what changes, and what deliberately does not
+
+*Added 26 Aug 2026: the web tier is deployed to Vercel so the client can test.
+The worker stays off. This is exactly the serverless case the line above
+anticipated, so the pooler row in the table at the top of this document does
+NOT apply to that deployment.*
+
+Vercel runs each route as a short-lived lambda, which retires both assumptions
+behind session mode: there is no long-lived process to amortise a pool across,
+and every warm instance opens its own. Set these in the Vercel dashboard — not
+in a committed file:
+
+| Var | Value on Vercel | Why it differs |
+|---|---|---|
+| `DATABASE_URL` | `...pooler.supabase.com:6543/postgres?schema=public&sslmode=require&pgbouncer=true&connection_limit=1` | Transaction mode. `pgbouncer=true` stops Prisma issuing prepared statements, which transaction pooling cannot hold across a checkout. `connection_limit=1` is correct here for the same reason it was wrong before: the process *is* the request. |
+| `DIRECT_URL` | unchanged, `:5432` | Migrations still need session mode for Prisma's advisory lock — and `db:deploy` runs from a laptop, never from a lambda. |
+| `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | ≥16 chars each | Boot-required by `lib/env.ts`; the app refuses to start without them. |
+| `LOGIN_DEFAULT_DOMAIN` | e.g. `tradebazar.local` | Optional — the login route falls back to `tradebazar.local`. Set it so username logins resolve to the intended domain. |
+| `REDIS_URL` | **leave unset** | See below. |
+
+**No worker runs on Vercel.** BullMQ needs a long-lived process; Vercel has
+none. `REDIS_URL` is therefore optional in `lib/env.ts`, and each queue module
+raises a named refusal rather than `new IORedis(undefined)` quietly dialling
+localhost and retrying forever. The degradation is the designed one, not a
+hang: the ARK endpoint persists the raw payload first, marks the event `FAILED`
+with that refusal as its reason, and still answers 202. Nothing is lost, and
+every event stays replayable from the events screen once a worker exists.
+Campaign intake and CSV imports degrade the same way.
+
+**Still per-instance on serverless:** `lib/rate-limit.ts` keeps its counters in
+a process-local `Map`, so the ARK endpoint's rate limit is per lambda instance
+rather than global. Acceptable for a testing tier; it needs a shared store
+before this deployment takes production traffic.
+
 **Prisma SSL parameter warning:** the Rust engine (quaint) accepts `sslmode=disable|prefer|require` only. `verify-ca`/`verify-full` are silently downgraded to `prefer` (string `Unsupported SSL mode, defaulting to \`prefer\`` is in the shipped `.dylib`). `sslrootcert` is not a Prisma param and is discarded. For real cert verification use `sslmode=require&sslaccept=strict&sslcert=<path>` — and test it against the pooler hostname before relying on it.
 
 ### A4. Stop `migrate dev` from ever reaching a hosted DB

@@ -18,6 +18,25 @@ import IORedis from 'ioredis';
 import { CAMPAIGN_INTAKE_QUEUE, intakeJobId, type CampaignIntakeJobData } from '@crm/shared';
 import { env } from '@/lib/env';
 
+/**
+ * The queue's connection string, or a refusal a caller can act on.
+ *
+ * Without Redis there is no worker, so an enqueue cannot succeed — and every
+ * caller of these modules already treats a throw here as "store it and leave
+ * it replayable". Saying so plainly beats `new IORedis(undefined)`, which
+ * quietly dials localhost and retries forever on a host that has no Redis.
+ */
+function redisUrl(): string {
+  const url = env.REDIS_URL;
+  if (!url) {
+    throw new Error(
+      'REDIS_URL is not configured, so background work cannot be queued. ' +
+        'The payload is stored and stays replayable — set REDIS_URL and run the worker to process it.',
+    );
+  }
+  return url;
+}
+
 const g = globalThis as unknown as { intakeQueue?: Queue; intakeRedis?: IORedis };
 
 function intakeQueue(): Queue {
@@ -25,7 +44,7 @@ function intakeQueue(): Queue {
 
   const connection =
     g.intakeRedis ??
-    new IORedis(env.REDIS_URL, {
+    new IORedis(redisUrl(), {
       // Required by BullMQ: a blocking command that outlives the retry budget
       // otherwise kills the client mid-command.
       maxRetriesPerRequest: null,

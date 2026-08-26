@@ -8,7 +8,18 @@ import { z } from 'zod';
 
 const schema = z.object({
   DATABASE_URL: z.string().min(1),
-  REDIS_URL: z.string().min(1),
+  /**
+   * OPTIONAL, so the app boots without a queue.
+   *
+   * Redis backs the BullMQ hand-off to the worker — the ARK webhook, campaign
+   * intake and CSV imports. A serverless host (Vercel) runs no worker, so
+   * demanding it here would refuse to start an app whose every synchronous
+   * screen works perfectly well. The queue modules connect LAZILY and throw a
+   * named error when it is missing, and each caller already handles that by
+   * storing the event and marking it replayable — nothing is lost, it simply
+   * waits for a worker to exist.
+   */
+  REDIS_URL: z.string().min(1).optional(),
   JWT_ACCESS_SECRET: z.string().min(16, 'JWT_ACCESS_SECRET must be at least 16 characters'),
   JWT_REFRESH_SECRET: z.string().min(16, 'JWT_REFRESH_SECRET must be at least 16 characters'),
   JWT_ACCESS_TTL: z.string().default('15m'),
