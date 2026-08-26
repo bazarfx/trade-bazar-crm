@@ -27,6 +27,7 @@ import 'server-only';
 import { prisma, Prisma, type WebhookStatus } from '@crm/db';
 import {
   ARK_REPLAYABLE_STATUSES,
+  isSignatureRejection,
   ARK_SOURCE_KIND,
   INTAKE_EVENT_PAGE_SIZE,
   arkPath,
@@ -40,6 +41,7 @@ import {
   type WebhookStatusValue,
 } from '@crm/shared';
 import type { Principal } from '@/lib/auth/actor';
+import { audit } from '@/lib/audit';
 import {
   applyConfigChange,
   assertConfigPermission,
@@ -73,13 +75,21 @@ const SOURCE_SELECT = {
   isActive: true,
   fieldMapping: true,
   lastPayload: true,
+  // The SCHEME is configuration an Admin edits and must be able to read back.
+  // The SECRET is a credential and stays out of this select entirely —
+  // whether one exists is answered by `secretFlags` below, which reads ids
+  // and nothing else, so the value never enters a row a DTO is built from.
+  signatureHeader: true,
+  signatureAlgorithm: true,
+  signatureFormat: true,
+  signaturePrefix: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.WebhookSourceSelect;
 
 type SourceRow = Prisma.WebhookSourceGetPayload<{ select: typeof SOURCE_SELECT }>;
 
-function toSourceDto(row: SourceRow): ArkSourceDto {
+function toSourceDto(row: SourceRow, hasSecret: boolean): ArkSourceDto {
   return {
     id: row.id,
     name: row.name,
@@ -88,9 +98,30 @@ function toSourceDto(row: SourceRow): ArkSourceDto {
     isActive: row.isActive,
     mapping: row.fieldMapping,
     lastPayload: row.lastPayload,
+    signature: {
+      header: row.signatureHeader,
+      algorithm: row.signatureAlgorithm,
+      format: row.signatureFormat,
+      prefix: row.signaturePrefix,
+      // Whether a secret exists, never the secret. This is what lets the
+      // screen distinguish "configured and enforcing" from "half configured
+      // and refusing every call", which are very different states to be in.
+      hasSecret: hasSecret,
+    },
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+/** Which of these sources hold a signing secret. A separate, minimal read so
+ *  the secret itself never enters a row that a DTO is built from. */
+async function secretFlags(ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const rows = await prisma.webhookSource.findMany({
+    where: { id: { in: ids }, NOT: { signingSecret: null } },
+    select: { id: true },
+  });
+  return new Set(rows.map((r) => r.id));
 }
 
 /** What the change log snapshots: the things an Admin edits and may want to
@@ -99,7 +130,25 @@ function toSourceDto(row: SourceRow): ArkSourceDto {
 async function snapshot(tx: Tx, id: string): Promise<unknown> {
   return tx.webhookSource.findUnique({
     where: { id },
-    select: { id: true, name: true, slug: true, kind: true, moduleId: true, isActive: true, fieldMapping: true },
+    // An explicit allow-list, not an exclusion: `signingSecret` is absent
+    // because it is a credential and the change log is append-only, so a
+    // secret written here could never be taken back out. The signature
+    // SCHEME is not secret and belongs in the snapshot — without it, undoing
+    // a configuration change would silently leave verification pointing at
+    // the wrong header.
+    select: {
+      id: true,
+      name: true,
+      slug: true,
+      kind: true,
+      moduleId: true,
+      isActive: true,
+      fieldMapping: true,
+      signatureHeader: true,
+      signatureAlgorithm: true,
+      signatureFormat: true,
+      signaturePrefix: true,
+    },
   });
 }
 
@@ -112,7 +161,8 @@ export async function listArkSources(principal: Principal): Promise<ArkSourceDto
     orderBy: { createdAt: 'desc' },
     select: SOURCE_SELECT,
   });
-  return rows.map(toSourceDto);
+  const withSecret = await secretFlags(rows.map((r) => r.id));
+  return rows.map((row) => toSourceDto(row, withSecret.has(row.id)));
 }
 
 /** Assert first, resolve second: to a caller without the special, an unknown
@@ -129,7 +179,8 @@ async function requireSource(principal: Principal, id: string): Promise<SourceRo
 }
 
 export async function getArkSource(principal: Principal, id: string): Promise<ArkSourceDto> {
-  return toSourceDto(await requireSource(principal, id));
+  const row = await requireSource(principal, id);
+  return toSourceDto(row, (await secretFlags([row.id])).has(row.id));
 }
 
 // ── writes ────────────────────────────────────────────────────────────────
@@ -180,7 +231,7 @@ export async function createArkSource(
     after: snapshot,
   });
 
-  return { source: toSourceDto(result), receiverUrl: arkReceiverUrl(origin, token) };
+  return { source: toSourceDto(result, false), receiverUrl: arkReceiverUrl(origin, token) };
 }
 
 /**
@@ -202,6 +253,15 @@ export async function updateArkSource(
     // Stored exactly as validated, so what the worker parses back with
     // `parseArkMapping` is what the editor saved — never a translation.
     ...(input.mapping !== undefined ? { fieldMapping: input.mapping as Prisma.InputJsonObject } : {}),
+    // The signature SCHEME is ordinary configuration: audited, undoable, and
+    // editable without a deploy. The SECRET is not — it has its own operation
+    // below, because a credential must never sit in a change-log snapshot.
+    ...(input.signature?.header !== undefined ? { signatureHeader: input.signature.header ?? null } : {}),
+    ...(input.signature?.algorithm !== undefined
+      ? { signatureAlgorithm: input.signature.algorithm ?? null }
+      : {}),
+    ...(input.signature?.format !== undefined ? { signatureFormat: input.signature.format ?? null } : {}),
+    ...(input.signature?.prefix !== undefined ? { signaturePrefix: input.signature.prefix ?? null } : {}),
   };
 
   if (Object.keys(data).length === 0) {
@@ -220,7 +280,62 @@ export async function updateArkSource(
     after: snapshot,
   });
 
-  return toSourceDto(result);
+  return toSourceDto(result, (await secretFlags([result.id])).has(result.id));
+}
+
+/**
+ * Set or clear this source's signing secret.
+ *
+ * Its OWN operation, deliberately, and the reasons are not stylistic:
+ *
+ *  - a secret must never enter `ConfigChangeLog`, and `applyConfigChange`
+ *    snapshots the row before and after every edit it handles. So this write
+ *    does not go through it. What IS logged is that the secret changed, by
+ *    whom and when — an audit entry with no value in it;
+ *  - an empty string CLEARS the secret, which is how verification is switched
+ *    back off without also unsetting the scheme;
+ *  - the DTO returned reflects the new state, so a screen can immediately
+ *    show "enforcing" or "no secret set" without another round trip.
+ *
+ * The secret is never read back by anything but the receiver.
+ */
+export async function setArkSigningSecret(
+  principal: Principal,
+  id: string,
+  signingSecret: string,
+): Promise<ArkSourceDto> {
+  await requireSource(principal, id);
+  // Whether one was set BEFORE, so the log records a real transition rather
+  // than a placeholder. The value itself is never read.
+  const had = (await secretFlags([id])).has(id);
+
+  const trimmed = signingSecret.trim();
+  const row = await prisma.webhookSource.update({
+    where: { id },
+    data: { signingSecret: trimmed === '' ? null : trimmed },
+    select: SOURCE_SELECT,
+  });
+
+  // The FACT, never the value. `changes` deliberately carries booleans: the
+  // append-only log can never be corrected, so a secret written into it could
+  // never be taken back out (CLAUDE.md, and the same rule the password reset
+  // follows).
+  await audit.log({
+    entityType: 'WebhookSource',
+    entityId: id,
+    action: 'CONFIG_CHANGED',
+    actorType: 'USER',
+    actorId: principal.actor.userId,
+    changes: {
+      // The TRANSITION, never the value. The append-only log can never be
+      // corrected, so a secret written into it could never be taken back out.
+      signingSecret: {
+        from: had ? '(set)' : '(not set)',
+        to: trimmed === '' ? '(cleared)' : '(set)',
+      },
+    },
+  });
+  return toSourceDto(row, trimmed !== '');
 }
 
 // ── events ────────────────────────────────────────────────────────────────
@@ -321,6 +436,20 @@ export async function replayArkEvent(
 
   if (!(ARK_REPLAYABLE_STATUSES as readonly string[]).includes(event.status)) {
     throw new ConfigError('This event is already queued', 409, 'CONFLICT');
+  }
+
+  // A body that FAILED VERIFICATION is never replayable. It is kept because
+  // a forged call is evidence, not because it is work waiting to be done —
+  // and replay does not re-verify, so allowing it would make the signature
+  // check one click from bypassed by an operator who assumed IGNORED meant
+  // "benign". Re-posting it correctly signed is the legitimate route.
+  if (isSignatureRejection(event.error)) {
+    throw new ConfigError(
+      'This event failed signature verification and cannot be replayed. If it is genuine, ' +
+        'have the sender post it again with a valid signature.',
+      422,
+      'GUARDRAIL',
+    );
   }
 
   // A conditional update, not a read-then-write: two Admins pressing Replay

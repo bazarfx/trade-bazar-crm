@@ -3,6 +3,8 @@ import {
   ARK_OUTCOMES,
   applyArkTransform,
   arkMappingSchema,
+  arkSignatureConfigSchema,
+  depositDedupeKey,
   type ArkConcept,
   type ArkMapping,
 } from './conversion.js';
@@ -62,6 +64,10 @@ export const arkSourceUpdateSchema = z
     name: z.string().trim().min(1).max(100).optional(),
     isActive: z.boolean().optional(),
     mapping: arkMappingSchema.optional(),
+    /** How this source signs. The SECRET is set separately — see
+     *  `arkSigningSecretSchema` — because a credential must never travel in
+     *  the same payload as configuration that gets snapshotted for undo. */
+    signature: arkSignatureConfigSchema.optional(),
   })
   .strict();
 export type ArkSourceUpdateInput = z.infer<typeof arkSourceUpdateSchema>;
@@ -77,6 +83,20 @@ export interface ArkSourceDto {
   mapping: unknown;
   /** the newest raw payload received, for mapping against — null before the first */
   lastPayload: unknown;
+  /**
+   * How this source signs, and whether a secret has been set — never the
+   * secret itself. `hasSecret` is what lets the screen tell the three states
+   * apart: unconfigured (token only), configured and enforcing, and the
+   * dangerous middle one where a scheme is named but no secret backs it, in
+   * which case the receiver refuses every call rather than pretend.
+   */
+  signature: {
+    header: string | null;
+    algorithm: string | null;
+    format: string | null;
+    prefix: string | null;
+    hasSecret: boolean;
+  };
   createdAt: string;
   updatedAt: string;
 }
@@ -136,6 +156,10 @@ export const arkParsedEventSchema = z
       .optional(),
     depositedAt: z.coerce.date(),
     referral: z.string().trim().min(1).optional(),
+    /** ARK's own reference for this event, when the mapping names one. Never
+     *  required: the pipeline runs without it, it only makes a redelivered
+     *  deposit exactly identifiable. See `depositDedupeKey`. */
+    externalId: z.string().trim().min(1).max(160).optional(),
   })
   .strict();
 export type ArkParsedEvent = z.infer<typeof arkParsedEventSchema>;
@@ -163,7 +187,8 @@ export function coerceArkConcept(concept: ArkConcept, value: unknown): unknown {
     case 'accountNumber':
     case 'name':
     case 'language':
-    case 'referral': {
+    case 'referral':
+    case 'externalId': {
       if (typeof value !== 'string' && typeof value !== 'number') return undefined;
       const text = String(value).trim();
       return text === '' ? undefined : text;
@@ -194,7 +219,7 @@ export function coerceArkConcept(concept: ArkConcept, value: unknown): unknown {
  * required concept left empty fails with its own name rather than a type
  * error about null.
  */
-export function parseArkPayload(raw: unknown, mapping: ArkMapping): ArkParsedEvent {
+function resolveArkConcepts(raw: unknown, mapping: ArkMapping): Partial<Record<ArkConcept, unknown>> {
   const found: Partial<Record<ArkConcept, unknown>> = {};
   for (const rule of mapping.rules) {
     const value = resolveDotPath(raw, rule.source);
@@ -202,10 +227,74 @@ export function parseArkPayload(raw: unknown, mapping: ArkMapping): ArkParsedEve
     const coerced = coerceArkConcept(rule.concept, applyArkTransform(value, rule.transform));
     if (coerced !== undefined) found[rule.concept] = coerced;
   }
+  return found;
+}
+
+export function parseArkPayload(raw: unknown, mapping: ArkMapping): ArkParsedEvent {
+  const found = resolveArkConcepts(raw, mapping);
   return arkParsedEventSchema.parse({
     ...found,
     depositedAt: found.depositedAt ?? new Date(),
   });
+}
+
+/**
+ * The parse the PIPELINE runs: the event, plus the key that makes a
+ * redelivery of it harmless.
+ *
+ * It exists as its own function because only here is it known whether
+ * `depositedAt` came from the payload or from the default above — and a
+ * fingerprint built on the default would be worthless. The default is a fresh
+ * `new Date()` on every parse, so a redelivered deposit would fingerprint
+ * differently from its first copy and be banked twice, which is precisely the
+ * bug the key exists to prevent. Better to return null and let the ledger
+ * fall back to the event id than to hand it a key that quietly never matches.
+ *
+ * So the fingerprint is only offered when ARK actually timestamped the
+ * deposit. When ARK sends its own reference (`externalId`), none of this
+ * applies — that key is exact and needs no timestamp.
+ */
+export function parseArkEvent(
+  raw: unknown,
+  mapping: ArkMapping,
+  bodyFingerprint?: string | null,
+): { event: ArkParsedEvent; dedupeKey: string | null } {
+  const found = resolveArkConcepts(raw, mapping);
+  const event = arkParsedEventSchema.parse({
+    ...found,
+    depositedAt: found.depositedAt ?? new Date(),
+  });
+  // Only a timestamp that CAME FROM the payload may key a deposit. The
+  // default above is a fresh `new Date()` on every parse, so a key built on
+  // it would differ between a delivery and its redelivery and protect
+  // nothing — the failure would be invisible, which is worse than none.
+  const timestamped = found.depositedAt !== undefined;
+  return {
+    event,
+    dedupeKey: depositDedupeKey({
+      accountNumber: event.accountNumber,
+      externalId: event.externalId ?? null,
+      depositAmount: event.depositAmount ?? null,
+      depositedAt: timestamped ? event.depositedAt : null,
+      bodyFingerprint: bodyFingerprint ?? null,
+    }),
+  };
+}
+
+/**
+ * A stable string for a JSON body: the same value whatever order its keys
+ * arrived in. Hashing this rather than the received text is what makes the
+ * last-resort key survive a sender that re-serialises between deliveries —
+ * and the stored `WebhookEvent.raw` is a parsed object anyway, so there is no
+ * original text left to hash by the time a replay reads it.
+ */
+export function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
 }
 
 // ── match confidence (spec §7) ────────────────────────────────────────────

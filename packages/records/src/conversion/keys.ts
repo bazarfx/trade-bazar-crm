@@ -22,3 +22,20 @@ export const WEBHOOK_EVENT_KEY = '_webhookEvent';
 export const DEPOSIT_AMOUNT_KEY = '_amount';
 export const DEPOSIT_AT_KEY = '_depositedAt';
 export const DEPOSIT_FTD_KEY = '_firstDeposit';
+
+/**
+ * On DEPOSIT_RECEIVED: this deposit was REFUSED as a duplicate, not banked.
+ *
+ * The most important line the ledger writes. Where ARK sends neither its own
+ * reference nor a timestamp, a genuine second identical deposit and a
+ * redelivery are the same bytes, and suppressing is a judgement call that can
+ * be wrong. Logging it with the amount is what keeps that call reviewable: a
+ * reconciliation against ARK's statement lands on this entry instead of on
+ * silence.
+ */
+export const DEPOSIT_SUPPRESSED_KEY = '_duplicateSuppressed';
+
+/** On a suppressed DEPOSIT_RECEIVED: the key the ledger matched on, so an
+ *  operator can see WHICH rule refused it — ARK's reference, the deposit's
+ *  facts, or the raw body. */
+export const DEPOSIT_DEDUPE_KEY = '_dedupeKey';

@@ -9,10 +9,19 @@
  * every time. The totals are also stripped from every field-driven write by
  * the record engine (`derivedColumns`), so this file is the only writer.
  *
- * **Idempotent on the event.** A replayed webhook carries the same
- * `webhookEventId`; a ledger row already pointing at it is returned as-is
- * and nothing is inserted. "Every event is replayable" has to mean
- * replayable SAFELY, or nobody will dare press the button.
+ * **Idempotent twice over**, because there are two ways one deposit arrives
+ * twice and they need different keys:
+ *
+ *   - REPLAY — an operator presses the button on a stored event. Both runs
+ *     carry the same `webhookEventId`, and a row already pointing at it is
+ *     returned as-is. "Every event is replayable" has to mean replayable
+ *     SAFELY, or nobody will dare press the button.
+ *   - REDELIVERY — ARK posts the same deposit again, which lands as a NEW
+ *     event with a new id, so the event id cannot see it. `dedupeKey` is
+ *     computed from the event itself (`depositDedupeKey` in @crm/shared), so
+ *     both copies agree on it, and a unique index on `(dealId, dedupeKey)`
+ *     refuses the second insert in the database — not in a read two
+ *     concurrent workers can both pass.
  *
  * Nothing here names a table. The ledger, its columns and the parent's
  * derived columns all come from the storage shape (`LedgerShape`).
@@ -33,7 +42,14 @@ import {
   type AuditMeta,
   type ModuleContext,
 } from '../records/service.js';
-import { DEPOSIT_AMOUNT_KEY, DEPOSIT_AT_KEY, DEPOSIT_FTD_KEY, WEBHOOK_EVENT_KEY } from './keys.js';
+import {
+  DEPOSIT_AMOUNT_KEY,
+  DEPOSIT_AT_KEY,
+  DEPOSIT_DEDUPE_KEY,
+  DEPOSIT_FTD_KEY,
+  DEPOSIT_SUPPRESSED_KEY,
+  WEBHOOK_EVENT_KEY,
+} from './keys.js';
 import { resolveConversionTarget, type ConversionTarget } from './modules.js';
 
 /**
@@ -178,37 +194,125 @@ export async function recordDeposit(
 
     const rows = ledgerDelegate(tx, ledger.delegateName);
 
-    // Idempotency: the event already produced a row. Return it with the
-    // totals as they stand; insert nothing, log nothing — the timeline is
-    // what happened, and it happened once.
-    if (parsed.webhookEventId) {
-      const existing = await rows.findFirst({
-        where: { [ledger.eventColumn]: parsed.webhookEventId },
-        select: { id: true, [ledger.parentColumn]: true },
+    // Idempotency, on TWO keys, most trustworthy first. Either hit returns
+    // the row that already exists with the totals as they stand; nothing is
+    // inserted and nothing is logged, because the timeline is what happened
+    // and it happened once.
+    //
+    //   dedupeKey      — derived from the EVENT (ARK's own reference, else a
+    //                    fingerprint of the deposit's facts). This is what
+    //                    catches a REDELIVERY: ARK posting the same deposit
+    //                    again arrives as a different WebhookEvent, so the
+    //                    event id below cannot see it and the money would be
+    //                    banked twice.
+    //   webhookEventId — our stored copy of one event. This is what makes the
+    //                    REPLAY button safe, and it stays because a hand
+    //                    replay of a pre-dedupeKey row still has to no-op.
+    // BOTH reads are scoped to THIS deal, matching the unique index they
+    // front. Unscoped, a key that two deals happen to share would hand back
+    // the other deal's row and the other deal's totals — one customer's
+    // deposit answering for another's, which is worse than the duplicate.
+    const idempotencyKeys: Row[] = [];
+    if (parsed.dedupeKey) {
+      idempotencyKeys.push({
+        [ledger.parentColumn]: parsed.dealId,
+        [ledger.dedupeColumn]: parsed.dedupeKey,
       });
-      if (existing) {
-        const totals = await currentTotals(tx, resolved, String(existing[ledger.parentColumn]));
-        return {
-          depositId: String(existing['id']),
-          totalDeposited: totals.total,
-          depositCount: totals.count,
-          inserted: false,
-        };
-      }
+    }
+    if (parsed.webhookEventId) {
+      idempotencyKeys.push({
+        [ledger.parentColumn]: parsed.dealId,
+        [ledger.eventColumn]: parsed.webhookEventId,
+      });
+    }
+
+    for (const where of idempotencyKeys) {
+      const existing = await rows.findFirst({ where, select: { id: true } });
+      if (!existing) continue;
+
+      const totals = await currentTotals(tx, resolved, parsed.dealId);
+
+      // A SUPPRESSION IS NEVER SILENT. Where ARK sends neither a reference
+      // nor a timestamp, two genuine identical deposits are indistinguishable
+      // from a redelivery — no algorithm can separate them, because the
+      // information is not in the payload. Suppressing is the safer default
+      // against a retrying sender, but it can be wrong, and money that was
+      // refused has to leave a trace an operator can reconcile against ARK's
+      // own statement. So the refusal is logged with the amount, on the deal
+      // whose ledger declined it (invariant 2: everything is logged).
+      await auditWithin(tx).logMany([
+        {
+          entityType: target.storage.shape.entityType,
+          entityId: parsed.dealId,
+          action: 'DEPOSIT_RECEIVED',
+          ...actorIdentity(principal),
+          changes: {
+            [DEPOSIT_SUPPRESSED_KEY]: { from: null, to: true },
+            [DEPOSIT_AMOUNT_KEY]: { from: null, to: Number(money(parsed.amount)) },
+            [DEPOSIT_AT_KEY]: { from: null, to: parsed.depositedAt.toISOString() },
+            ...(parsed.dedupeKey
+              ? { [DEPOSIT_DEDUPE_KEY]: { from: null, to: parsed.dedupeKey } }
+              : {}),
+            ...(parsed.webhookEventId
+              ? { [WEBHOOK_EVENT_KEY]: { from: null, to: parsed.webhookEventId } }
+              : {}),
+          },
+          ipAddress: meta.ipAddress ?? null,
+          userAgent: meta.userAgent ?? null,
+        },
+      ]);
+
+      return {
+        depositId: String(existing['id']),
+        totalDeposited: totals.total,
+        depositCount: totals.count,
+        inserted: false,
+      };
     }
 
     const before = await currentTotals(tx, resolved, parsed.dealId);
 
-    const created = await rows.create({
-      data: {
-        [ledger.parentColumn]: parsed.dealId,
-        [ledger.amountColumn]: new Prisma.Decimal(money(parsed.amount)),
-        [ledger.atColumn]: parsed.depositedAt,
-        [ledger.eventColumn]: parsed.webhookEventId ?? null,
-        [ledger.firstColumn]: parsed.isFtd,
-      },
-      select: { id: true },
-    });
+    // The check above is the fast path; THIS is the guarantee. Two workers
+    // draining two redeliveries at once can both pass a read, and only a
+    // unique index can refuse the second write.
+    //
+    // The violation is deliberately NOT recovered from here. A failed
+    // statement aborts the enclosing Postgres transaction, so there is no
+    // reading the winning row back on this connection — every later query
+    // would fail too.
+    //
+    // What happens next, stated accurately: this transaction rolls back
+    // having written nothing, which is CORRECT because the other writer
+    // banked the deposit. The ARK worker catches the throw and settles the
+    // event FAILED with this message; BullMQ does not retry it, so an
+    // operator sees it on the events screen and presses Replay, which finds
+    // the row on the pre-check and returns idempotently. The money is right
+    // at every step — the only cost is that a benign race surfaces as an
+    // event needing a human glance, which for money is the right trade.
+    let created: Row;
+    try {
+      created = await rows.create({
+        data: {
+          [ledger.parentColumn]: parsed.dealId,
+          [ledger.amountColumn]: new Prisma.Decimal(money(parsed.amount)),
+          [ledger.atColumn]: parsed.depositedAt,
+          [ledger.eventColumn]: parsed.webhookEventId ?? null,
+          [ledger.dedupeColumn]: parsed.dedupeKey ?? null,
+          [ledger.firstColumn]: parsed.isFtd,
+        },
+        select: { id: true },
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new ConfigError(
+          'This deposit was already recorded by another worker at the same instant, so nothing ' +
+            'was written here and no money was lost. Replay this event to confirm the ledger.',
+          409,
+          'CONFLICT',
+        );
+      }
+      throw err;
+    }
     const depositId = String(created['id']);
 
     const after = await recomputeTotals(tx, resolved, parsed.dealId);

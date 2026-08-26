@@ -12,29 +12,49 @@
  * are written by `apps/worker/src/jobs/ark-webhook.ts`.
  *
  * ═══════════════════════════════════════════════════════════════════════
- * THE SIGNATURE-VERIFICATION SLOT.
+ * SIGNATURE VERIFICATION, PER SOURCE.
  *
- * ARK's authentication scheme is unknown — no technical spec exists for the
- * webhook. `verifyArkSignature` below IS the slot: it reads the header and
- * algorithm `ARK_SIGNATURE_SLOT` names, computes over the raw body with the
- * source's `signingSecret` column, and compares in constant time. Today the
- * slot's header is null, so it answers "not configured" and the unguessable
- * token — 128 random bits, hashed at rest — is the only gate. When ARK says
- * how it signs: set the header and algorithm in `@crm/shared`'s
- * `ARK_SIGNATURE_SLOT`, put the secret on the source, and nothing here moves.
- * ═══════════════════════════════════════════════════════════════════════
+ * ARK's authentication scheme is still unspecified. It no longer has to be:
+ * the scheme is DATA on each source — which header carries the digest, the
+ * algorithm, the encoding, an optional prefix — set from Settings -> ARK
+ * Terminal without a deploy, and the secret is set through its own route so
+ * it never enters the change log.
+ *
+ * `verifyWebhookSignature` in ./signature.ts does the arithmetic; this file
+ * supplies the credentials. A source with nothing configured accepts as
+ * before, with the unguessable token as its gate. A source with ANY of the
+ * three set but not all of them REFUSES — half a configuration must never
+ * read as verification while verifying nothing.
+ *
+ * The order is load-bearing and unchanged: the raw row is written BEFORE the
+ * check is applied (a forged call is evidence), and a failed check settles
+ * the event IGNORED, marked `ARK_SIGNATURE_REJECTED` so replay refuses it —
+ * without that marker a forgery would be one click from the pipeline.
  */
 import 'server-only';
-import { createHmac, timingSafeEqual } from 'node:crypto';
 import { prisma, type Prisma } from '@crm/db';
-import { ARK_SIGNATURE_SLOT, ARK_SOURCE_KIND, ARK_TOKEN_PATTERN } from '@crm/shared';
+import { ARK_SIGNATURE_REJECTED, ARK_SOURCE_KIND, ARK_TOKEN_PATTERN } from '@crm/shared';
+import { verifyWebhookSignature, type SignatureCheck } from './signature';
+
+export type { SignatureCheck };
 import { hashIntakeToken } from '@/lib/intake/sources';
 import { enqueueArk } from './queue';
+
+/** A source's verification settings as the receiver needs them: the secret
+ *  and the scheme it is used with. Read here and only here. */
+export interface ArkSourceCredentials {
+  id: string;
+  signingSecret: string | null;
+  signatureHeader: string | null;
+  signatureAlgorithm: string | null;
+  signatureFormat: string | null;
+  signaturePrefix: string | null;
+}
 
 export type ArkLookup =
   | { outcome: 'unknown' }
   | { outcome: 'inactive' }
-  | { outcome: 'active'; source: { id: string; signingSecret: string | null } };
+  | { outcome: 'active'; source: ArkSourceCredentials };
 
 /**
  * Resolve a token to its ARK source without revealing anything to a probe.
@@ -50,57 +70,39 @@ export async function lookupArkSource(token: string): Promise<ArkLookup> {
 
   const source = await prisma.webhookSource.findFirst({
     where: { tokenHash: hashIntakeToken(token), kind: ARK_SOURCE_KIND },
-    // The secret is read here and only here — for the slot — and never
+    // The secret is read here and only here — for verification — and never
     // leaves this module.
-    select: { id: true, isActive: true, signingSecret: true },
+    select: {
+      id: true,
+      isActive: true,
+      signingSecret: true,
+      signatureHeader: true,
+      signatureAlgorithm: true,
+      signatureFormat: true,
+      signaturePrefix: true,
+    },
   });
   if (!source) return { outcome: 'unknown' };
   if (!source.isActive) return { outcome: 'inactive' };
-  return { outcome: 'active', source: { id: source.id, signingSecret: source.signingSecret } };
+  return {
+    outcome: 'active',
+    source: {
+      id: source.id,
+      signingSecret: source.signingSecret,
+      signatureHeader: source.signatureHeader,
+      signatureAlgorithm: source.signatureAlgorithm,
+      signatureFormat: source.signatureFormat,
+      signaturePrefix: source.signaturePrefix,
+    },
+  };
 }
 
-export type SignatureCheck =
-  /** the slot is not configured: accept, as the file header explains */
-  | { ok: true; verified: false }
-  /** the slot is configured and the body checked out */
-  | { ok: true; verified: true }
-  /** the slot is configured and the body did NOT check out */
-  | { ok: false; reason: string };
-
-/**
- * THE SLOT. See the file header. Runs over the RAW text, never over a parsed
- * object — a signature is over bytes, and re-serialising JSON changes them.
- */
 export function verifyArkSignature(
   req: Request,
   rawText: string,
-  source: { signingSecret: string | null },
+  source: ArkSourceCredentials,
 ): SignatureCheck {
-  const { header, algorithm } = ARK_SIGNATURE_SLOT;
-  if (header === null || algorithm === null) return { ok: true, verified: false };
-
-  // Configured but this source has no secret yet: refusing is the honest
-  // answer. Accepting would mean "verification is on" while verifying nothing.
-  if (!source.signingSecret) return { ok: false, reason: 'This source has no signing secret configured' };
-
-  const presented = req.headers.get(header);
-  if (!presented) return { ok: false, reason: `Missing ${header} header` };
-
-  // `algorithm` is a one-member union today; a second member is added to the
-  // slot alongside its branch here, so this switch stays exhaustive.
-  switch (algorithm) {
-    case 'hmac-sha256': {
-      const expected = createHmac('sha256', source.signingSecret).update(rawText, 'utf8').digest('hex');
-      const a = Buffer.from(expected, 'utf8');
-      const b = Buffer.from(presented.trim().toLowerCase(), 'utf8');
-      const matches = a.length === b.length && timingSafeEqual(a, b);
-      return matches ? { ok: true, verified: true } : { ok: false, reason: ARK_SIGNATURE_SLOT.failureMessage };
-    }
-    default: {
-      const _exhaustive: never = algorithm;
-      return { ok: false, reason: 'Unsupported signature algorithm' };
-    }
-  }
+  return verifyWebhookSignature((name) => req.headers.get(name), rawText, source);
 }
 
 /**
@@ -133,7 +135,14 @@ export async function storeArkEvent(
   if (!signature.ok) {
     await prisma.webhookEvent.update({
       where: { id: event.id },
-      data: { status: 'IGNORED', error: signature.reason, processedAt: new Date() },
+      data: {
+        status: 'IGNORED',
+        // Prefixed so the replay path can tell a FORGERY apart from the
+        // benign things that also land IGNORED. Without it, a rejected body
+        // is one click from running through the pipeline.
+        error: `${ARK_SIGNATURE_REJECTED}: ${signature.reason}`,
+        processedAt: new Date(),
+      },
       select: { id: true },
     });
     return { eventId: event.id };

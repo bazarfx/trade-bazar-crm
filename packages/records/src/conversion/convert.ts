@@ -330,6 +330,7 @@ export async function convertLead(
           dealId,
           amount: parsed.deposit.amount,
           depositedAt: parsed.deposit.depositedAt,
+          ...(parsed.deposit.dedupeKey ? { dedupeKey: parsed.deposit.dedupeKey } : {}),
           // The deposit's evidence is the conversion's event unless the
           // caller says the deposit came on a different one.
           webhookEventId: parsed.deposit.webhookEventId ?? parsed.webhookEventId,

@@ -70,17 +70,93 @@ export function arkJobId(eventId: string, replayCount: number): string {
  * with `ARK_SIGNATURE_SLOT.failureMessage`; it never discards the payload,
  * because "persist raw first" applies to forged calls too (they are evidence).
  *
- * Both values are null today on purpose. A null header means "not configured:
- * accept and enqueue", which is the honest behaviour while the contract is
- * unknown — the token in the URL is the only authentication ARK has been
- * given. Filling these in is a one-line change here plus the secret on the
- * source; no engine code moves.
+ * SUPERSEDED as the place to configure this. Both values stay null and the
+ * struct remains only as a fallback for a source created before per-source
+ * settings existed, plus `failureMessage`, which the verifier still returns
+ * on a digest mismatch. Do NOT fill these in: setting them here switches
+ * verification on for EVERY source at once and needs a deploy, which is the
+ * pair of faults `arkSignatureConfigSchema` below exists to remove. Configure
+ * the scheme on the source instead.
  */
 export const ARK_SIGNATURE_SLOT = {
   header: null as string | null,
-  algorithm: null as 'hmac-sha256' | null,
+  algorithm: null as ArkSignatureAlgorithm | null,
   failureMessage: 'Signature verification failed',
 } as const;
+
+/**
+ * The marker every signature refusal wears on `WebhookEvent.error`.
+ *
+ * A refused event is still STORED — "persist raw first" applies to forged
+ * calls, which are evidence — and it settles IGNORED. But IGNORED is also
+ * where benign outcomes land ("carried no deposit", "this source is paused"),
+ * and IGNORED is replayable. Without a marker, an operator working down the
+ * IGNORED list could press Replay on a forgery and walk it through the whole
+ * pipeline: create a lead, convert it, bank a deposit. The replay path reads
+ * this prefix and refuses, so a body that failed verification can never be
+ * promoted into the pipeline by hand.
+ */
+export const ARK_SIGNATURE_REJECTED = 'SIGNATURE_REJECTED';
+
+/** Did this event fail verification? Read off the stored error text. */
+export function isSignatureRejection(error: string | null | undefined): boolean {
+  return typeof error === 'string' && error.startsWith(ARK_SIGNATURE_REJECTED);
+}
+
+/**
+ * How a source signs, as DATA on the source rather than a constant in code.
+ *
+ * The slot above was written when the answer had to be the same for
+ * everybody; it stays as the fallback default. But ARK's scheme is still
+ * unspecified while campaign platforms have schemes of their own, and a
+ * single global switch has two faults: turning it on demands a deploy — which
+ * the prime directive forbids for anything a customer can configure — and it
+ * turns on for EVERY source at once, so the first partner to start signing
+ * breaks every partner that does not.
+ *
+ * These three values are what actually differs between real-world schemes.
+ * The algorithm is a union so adding one is a compile error at every branch
+ * that must handle it, never a silently unverified source.
+ */
+export const ARK_SIGNATURE_ALGORITHMS = ['hmac-sha256', 'hmac-sha512'] as const;
+export type ArkSignatureAlgorithm = (typeof ARK_SIGNATURE_ALGORITHMS)[number];
+
+/** How the digest is written on the wire. Hex and base64 both appear widely
+ *  enough that guessing one would reject half of all real callers. */
+export const ARK_SIGNATURE_FORMATS = ['hex', 'base64'] as const;
+export type ArkSignatureFormat = (typeof ARK_SIGNATURE_FORMATS)[number];
+
+/**
+ * A source's verification settings, all optional because "not configured" is
+ * a legitimate and common state: no scheme means the unguessable token stays
+ * the only gate, exactly as before this existed.
+ *
+ * VERIFICATION IS ENFORCED only when the header, the algorithm and the
+ * source's secret are ALL present. Half a configuration must never read as
+ * "verification is on" while verifying nothing — and it must never read as
+ * "off" once someone has set a secret either, which is why the receiver
+ * refuses a configured-but-secretless source rather than waving it through.
+ */
+export const arkSignatureConfigSchema = z
+  .object({
+    /** the header carrying the digest, e.g. `x-ark-signature` */
+    header: z.string().trim().min(1).max(100).nullish(),
+    algorithm: z.enum(ARK_SIGNATURE_ALGORITHMS).nullish(),
+    format: z.enum(ARK_SIGNATURE_FORMATS).nullish(),
+    /** a prefix the sender wears on the value, e.g. `sha256=` — stripped
+     *  before comparison because it is notation, not signature */
+    prefix: z.string().trim().max(20).nullish(),
+  })
+  .strict();
+export type ArkSignatureConfig = z.infer<typeof arkSignatureConfigSchema>;
+
+/** Setting the shared secret is its own operation: it is a credential, it is
+ *  write-only, and it must never travel back out in a DTO. Empty string
+ *  clears it, which is how verification is switched back off. */
+export const arkSigningSecretSchema = z
+  .object({ signingSecret: z.string().max(200) })
+  .strict();
+export type ArkSigningSecretInput = z.infer<typeof arkSigningSecretSchema>;
 
 // ── the payload mapping — THE admin-configurable space ───────────────────
 
@@ -98,6 +174,15 @@ export const ARK_CONCEPTS = [
   'depositAmount',
   'depositedAt',
   'referral',
+  /**
+   * ARK's OWN reference for this event, when it sends one — a transaction id,
+   * an event id, whatever they call it. The single most valuable field for
+   * correctness that the pipeline does not require: mapped, it makes a
+   * redelivered deposit exactly identifiable, so the ledger can refuse the
+   * second copy on the strength of ARK's word rather than a fingerprint.
+   * Unmapped, `depositDedupeKey` falls back to the deposit's own facts.
+   */
+  'externalId',
 ] as const;
 export type ArkConcept = (typeof ARK_CONCEPTS)[number];
 
@@ -294,6 +379,9 @@ export const conversionDepositSchema = z
     depositedAt: depositedAtSchema,
     /** the raw event that carried it, so the ledger row points at its evidence */
     webhookEventId: z.string().uuid().optional(),
+    /** the redelivery-proof key, forwarded to the ledger row this conversion
+     *  writes — an FTD is as redeliverable as any other deposit. */
+    dedupeKey: z.string().min(1).max(200).optional(),
   })
   .strict();
 export type ConversionDepositInput = z.infer<typeof conversionDepositSchema>;
@@ -322,11 +410,90 @@ export const depositInputSchema = z
     amount: amountSchema,
     depositedAt: depositedAtSchema,
     webhookEventId: z.string().uuid().optional(),
+    /**
+     * What makes a REDELIVERY harmless — see `depositDedupeKey`. Distinct
+     * from `webhookEventId`, which identifies our stored copy of an event and
+     * so only makes the replay button safe. Absent for a hand-entered
+     * deposit, which no webhook can duplicate.
+     */
+    dedupeKey: z.string().min(1).max(200).optional(),
     isFtd: z.boolean().default(false),
   })
   .strict();
 export type DepositInput = z.infer<typeof depositInputSchema>;
 
+/**
+ * The key two copies of one ARK deposit must agree on.
+ *
+ * THE PROBLEM IT SOLVES. `WebhookEvent.id` is ours and is minted per POST, so
+ * it identifies a replay of a stored event but NOT a redelivery from ARK —
+ * which arrives as a second event, with a second id, carrying the same money.
+ * Keyed on the event id alone, the ledger banks it twice and the deal's total
+ * is quietly wrong. This key is computed from the EVENT rather than from our
+ * receipt of it, so both copies land on the same string and the unique index
+ * on `(dealId, dedupeKey)` refuses the second row.
+ *
+ * THREE SOURCES, IN ORDER OF TRUST. Each prefix is distinct so keys from
+ * different sources can never collide by spelling the same characters:
+ *   1. `ark:` — `externalId` from the mapping, ARK's own reference. Exact,
+ *      and the reason that concept exists. Map it if ARK sends one.
+ *   2. `fp:` — the deposit's own facts: account number, the amount to the
+ *      paisa, and the instant it was deposited. Only used when ARK actually
+ *      TIMESTAMPED the deposit; the parse defaults a missing timestamp to
+ *      now(), and a key built on that would differ per delivery and protect
+ *      nothing.
+ *   3. `raw:` — a digest of the bytes that arrived. The last resort, and the
+ *      one that carries the live mapping: with neither a reference nor a
+ *      timestamp mapped, a redelivery is recognisable only by being the same
+ *      body twice.
+ *
+ * WHAT THE LAST RESORT CANNOT DO, stated plainly because money depends on it:
+ * if ARK sends no reference and no timestamp, then two GENUINE deposits of
+ * the same amount on the same account are byte-identical, and no algorithm
+ * can tell them apart from a redelivery — the information simply is not in
+ * the payload. This function suppresses the second one, which is the safer
+ * default against a retrying sender, and `recordDeposit` writes an audit
+ * entry naming the amount it refused every time it does so. A suppression is
+ * therefore never silent: it is a line on the timeline an operator can
+ * reconcile against ARK's own statement. Mapping `externalId` removes the
+ * ambiguity outright, which is why the mapping editor asks for it.
+ *
+ * Deliberately NOT hashed. The value is short, carries no secret, and a
+ * readable key is one an operator can match against a payload when a deposit
+ * is questioned; a digest would only look tidier in the column.
+ *
+ * Returns null when there is no deposit to key — an account-only event banks
+ * nothing, so it needs no protection.
+ */
+export function depositDedupeKey(event: {
+  accountNumber?: string | null;
+  externalId?: string | null;
+  depositAmount?: number | null;
+  depositedAt?: Date | null;
+  /** a stable digest of the RAW body, supplied by the receiver — see the
+   *  third source below. Computed by the caller because hashing belongs to a
+   *  server runtime and this module is bundled for the browser too. */
+  bodyFingerprint?: string | null;
+}): string | null {
+  const external = typeof event.externalId === 'string' ? event.externalId.trim() : '';
+  if (external !== '') return `ark:${external}`;
+
+  const amount = event.depositAmount;
+  const hasDeposit = typeof amount === 'number' && Number.isFinite(amount) && amount > 0;
+  if (!hasDeposit) return null;
+
+  if (event.depositedAt) {
+    const account = (event.accountNumber ?? '').trim().toLowerCase();
+    // Fixed to two decimals so 1000 and 1000.00 are one deposit, and the
+    // timestamp in UTC so the key does not depend on where it was computed.
+    return `fp:${account}|${amount.toFixed(2)}|${event.depositedAt.toISOString()}`;
+  }
+
+  const body = typeof event.bodyFingerprint === 'string' ? event.bodyFingerprint.trim() : '';
+  if (body !== '') return `raw:${body}`;
+
+  return null;
+}
 /**
  * Transfer of Deal Owner (spec §7.1). The deal id travels in the URL, like
  * `recordAssignSchema`; `reason` is free text for the timeline — "customer

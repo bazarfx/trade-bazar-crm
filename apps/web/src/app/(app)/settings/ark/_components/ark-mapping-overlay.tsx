@@ -50,6 +50,7 @@ const CONCEPT_LABEL: Record<ArkConcept, string> = {
   depositAmount: 'Deposit amount',
   depositedAt: 'Deposit time',
   referral: 'Referral',
+  externalId: "ARK's own event reference",
 };
 
 const TRANSFORM_LABEL: Record<ArkTransform, string> = {
@@ -111,6 +112,14 @@ export function ArkMappingOverlay({ source, onSaved, onClose }: ArkMappingOverla
         concept: r.target as ArkConcept,
         transform: r.transform as ArkTransform,
       })),
+      // Carried through untouched. This overlay edits RULES; it does not edit
+      // the referral-field override, and a save that quietly dropped it would
+      // return the worker to guessing that field by name.
+      ...(source.mapping !== null &&
+      typeof source.mapping === 'object' &&
+      typeof (source.mapping as { referralField?: unknown }).referralField === 'string'
+        ? { referralField: (source.mapping as { referralField: string }).referralField }
+        : {}),
     };
 
     setBusy(true);

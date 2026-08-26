@@ -13,6 +13,12 @@ import {
 } from '@/app/(app)/settings/intake/_components/source-events-overlay';
 import { ArkMappingOverlay } from './ark-mapping-overlay';
 import { outcomeOf } from './ark-outcome';
+import {
+  ARK_SIGNATURE_STATE,
+  ArkSignatureOverlay,
+  arkSignatureState,
+  type ArkSignatureView,
+} from './ark-signature-overlay';
 import { ArkSourceCreateOverlay, type CreatedArkSource } from './ark-source-create-overlay';
 
 /**
@@ -36,6 +42,13 @@ export interface ArkSourceRow {
   mapping: unknown;
   /** the last raw payload this source received, or null before the first one */
   lastPayload: unknown;
+  /**
+   * How this source authenticates its caller, and whether a secret is set —
+   * never the secret. Optional only so a response written before the
+   * signature block existed still renders; `arkSignatureState` reads a
+   * missing block as "token only", which is what such a source is.
+   */
+  signature?: ArkSignatureView;
   createdAt: string;
   /** the module an unmatched event creates a record in, when the API says */
   moduleSlug?: string | null;
@@ -76,6 +89,7 @@ export function ArkManager({ focus, modules }: ArkManagerProps) {
 
   const [creating, setCreating] = useState(false);
   const [mappingFor, setMappingFor] = useState<ArkSourceRow | null>(null);
+  const [signatureFor, setSignatureFor] = useState<ArkSourceRow | null>(null);
   const [eventsFor, setEventsFor] = useState<ArkSourceRow | null>(null);
   const [focusEventId, setFocusEventId] = useState<string | null>(null);
   /** the one moment the full URL exists client-side — see the intake screen */
@@ -165,8 +179,9 @@ export function ArkManager({ focus, modules }: ArkManagerProps) {
           read its shape, map it, replay. From then on every account event matches deals first and
           leads second by phone, and does one of four things — a deposit on an existing deal, a
           conversion, a sign-up, or a new lead for the senior pool — with every step on the
-          record&apos;s timeline as System (ARK Webhook). Signature verification is a documented
-          slot that switches on the day ARK says how it signs.
+          record&apos;s timeline as System (ARK Webhook). Signature verification is configured per
+          source under Signature — nothing about ARK&apos;s scheme is fixed in code, so the day
+          ARK says how it signs, an Admin switches it on here without a developer.
         </p>
       </div>
 
@@ -236,7 +251,7 @@ export function ArkManager({ focus, modules }: ArkManagerProps) {
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-border">
-                  {['Source', 'Mapping', 'Status', 'Events', 'Actions'].map((h) => (
+                  {['Source', 'Mapping', 'Signature', 'Status', 'Events', 'Actions'].map((h) => (
                     <th key={h} className="px-6 py-3 text-xs font-medium text-body">
                       {h}
                     </th>
@@ -254,6 +269,9 @@ export function ArkManager({ focus, modules }: ArkManagerProps) {
                       <MappingState mapping={source.mapping} />
                     </td>
                     <td className="px-6 py-3">
+                      <SignatureState signature={source.signature} />
+                    </td>
+                    <td className="px-6 py-3">
                       {source.isActive ? <Chip tone="success">Active</Chip> : <Chip tone="neutral">Paused</Chip>}
                     </td>
                     <td className="px-6 py-3">
@@ -268,6 +286,15 @@ export function ArkManager({ focus, modules }: ArkManagerProps) {
                           data-track="settings.ark.source.mapping.open"
                         >
                           Mapping
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => setSignatureFor(source)}
+                          title="How this source authenticates ARK: which header carries the digest, how it is computed, and the shared secret behind it."
+                          data-track="settings.ark.signature.open"
+                        >
+                          Signature
                         </Button>
                         <Button
                           variant="secondary"
@@ -326,6 +353,20 @@ export function ArkManager({ focus, modules }: ArkManagerProps) {
         />
       ) : null}
 
+      {signatureFor !== null ? (
+        <ArkSignatureOverlay
+          source={signatureFor}
+          onSaved={() => {
+            setSignatureFor(null);
+            // The row's chip is read off the DTO, and a save moved it — a
+            // stale "Token only" beside a source that now refuses every call
+            // is the one thing this column exists to prevent.
+            refresh();
+          }}
+          onClose={() => setSignatureFor(null)}
+        />
+      ) : null}
+
       {eventsFor !== null ? (
         <SourceEventsOverlay
           source={{ id: eventsFor.id, name: eventsFor.name, moduleSlug: eventsFor.moduleSlug ?? null }}
@@ -369,6 +410,25 @@ function MappingState({ mapping }: { mapping: unknown }) {
   ) : (
     <Chip tone="warning" title="Phone and account number must both be mapped before an event can be acted on">
       Incomplete
+    </Chip>
+  );
+}
+
+/**
+ * Whether this source verifies its caller, said as a chip.
+ *
+ * Read through `arkSignatureState`, which mirrors the receiver's own branches
+ * — including the state worth a whole column: a scheme configured with no
+ * secret behind it, where verification fails CLOSED and every real call from
+ * ARK is refused. That one is invisible from the source's name, its mapping
+ * and its Active chip alike, and it is the reason this is a column rather
+ * than something you find by opening the pop-up.
+ */
+function SignatureState({ signature }: { signature: ArkSignatureView | undefined }) {
+  const state = ARK_SIGNATURE_STATE[arkSignatureState(signature)];
+  return (
+    <Chip tone={state.tone} title={state.title}>
+      {state.label}
     </Chip>
   );
 }

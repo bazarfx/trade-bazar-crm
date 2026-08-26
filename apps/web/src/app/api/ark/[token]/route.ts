@@ -12,19 +12,18 @@
  * ARK may never retry.
  *
  * ═══════════════════════════════════════════════════════════════════════
- * THE SPACE: SIGNATURE VERIFICATION.
+ * SIGNATURE VERIFICATION.
  *
- * ARK's authentication scheme is unknown — no technical spec exists for the
- * webhook. The per-source `signingSecret` column exists and
- * `verifyArkSignature` in `lib/ark/receive.ts` is wired at the marked point
- * below; it reads the header and algorithm `ARK_SIGNATURE_SLOT` names, which
- * are null today, so it answers "not configured" and the unguessable token
- * (128 random bits, hashed at rest) is the only gate. When the spec arrives:
- * fill the slot in `@crm/shared`, put the secret on the source, and VERIFY
- * HERE — after the raw row is written (a forged call is evidence), before it
- * is enqueued (a forged call must not convert a lead). This comment is the
- * record of that decision rather than a silent gap.
- * ═══════════════════════════════════════════════════════════════════════
+ * Configured PER SOURCE and applied here: `verifyArkSignature` reads the
+ * source's own header, algorithm, encoding and prefix, computes over the raw
+ * text, and compares in constant time. Nothing about it needs a deploy —
+ * an Admin fills the scheme in from Settings -> ARK Terminal the day ARK
+ * publishes it, and sets the secret through its own route.
+ *
+ * The ordering below is the part to preserve: verify over the RAW text before
+ * anything parses it, store the row FIRST (a forged call is evidence worth
+ * keeping), and only then refuse — so a rejected body is a stored, marked,
+ * non-replayable event rather than a lost payload.
  */
 import { NextResponse } from 'next/server';
 import { ARK_MAX_BODY_BYTES } from '@crm/shared';
@@ -100,7 +99,11 @@ export async function POST(req: Request, ctx: { params: Promise<Params> }): Prom
   const { eventId } = await storeArkEvent(lookup.source.id, payloadFromBody(text), signature);
 
   if (!signature.ok) {
-    return NextResponse.json({ error: signature.reason, eventId }, { status: 401 });
+    // GENERIC on the wire. `signature.reason` names stored configuration —
+    // the algorithm on the source, whether a secret is set — and this is an
+    // unauthenticated caller who has proved only that they hold the URL. The
+    // specific reason is on the event row, where the Admin reads it.
+    return NextResponse.json({ error: 'Signature verification failed', eventId }, { status: 401 });
   }
 
   // 202: accepted, not processed. ARK gets its acknowledgement the moment the

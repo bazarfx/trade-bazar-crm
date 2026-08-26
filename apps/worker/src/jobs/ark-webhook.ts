@@ -62,6 +62,7 @@
  * a replayed conversion finds its deal first and takes the re-deposit path,
  * and a replayed account-only event diffs to nothing.
  */
+import { createHash } from 'node:crypto';
 import { Worker, type Job } from 'bullmq';
 import { ZodError } from 'zod';
 import { prisma, type Prisma } from '@crm/db';
@@ -77,7 +78,8 @@ import {
   depositOf,
   namesAgree,
   parseArkMapping,
-  parseArkPayload,
+  canonicalJson,
+  parseArkEvent,
   type ArkMapping,
   type ArkOutcome,
   type ArkParsedEvent,
@@ -144,6 +146,15 @@ interface RunContext {
   event: ArkParsedEvent;
   /** the deposit the event carried, or null for an account-only event */
   deposit: { amount: number; depositedAt: Date } | null;
+  /**
+   * What makes ARK REDELIVERING this deposit harmless. Computed from the
+   * event, so a second POST of the same deposit lands on the same value and
+   * the ledger's unique index refuses it — `eventId` cannot do that job,
+   * because a redelivery gets an id of its own. Null when the event carried
+   * no deposit, and when ARK sent neither a reference nor a timestamp to
+   * build one from (see `parseArkEvent`).
+   */
+  dedupeKey: string | null;
 }
 
 type Settled =
@@ -477,12 +488,14 @@ async function redeposit(run: RunContext, match: DealMatch): Promise<Settled> {
 
   return prisma.$transaction(async (tx) => {
     await flagNameConflict(tx, run, match.leadId, match.leadName);
-    // Idempotent on the event id: a replay returns the existing row.
+    // Idempotent on both keys: `dedupeKey` stops a REDELIVERY of this
+    // deposit, `webhookEventId` stops a REPLAY of this stored event.
     await recordDeposit(run.principal, tx, {
       dealId: match.dealId,
       amount: deposit.amount,
       depositedAt: deposit.depositedAt,
       webhookEventId: run.eventId,
+      ...(run.dedupeKey ? { dedupeKey: run.dedupeKey } : {}),
       isFtd: false,
     });
     await auditWithin(tx).log(receipt(run, target, match.dealId, 'REDEPOSIT'));
@@ -514,7 +527,12 @@ async function convert(run: RunContext, leadId: string, leadName: string | null)
     const { dealId } = await convertLead(run.principal, tx, {
       leadId,
       arkAccountNo: run.event.accountNumber,
-      deposit: { amount: deposit.amount, depositedAt: deposit.depositedAt, webhookEventId: run.eventId },
+      deposit: {
+        amount: deposit.amount,
+        depositedAt: deposit.depositedAt,
+        webhookEventId: run.eventId,
+        ...(run.dedupeKey ? { dedupeKey: run.dedupeKey } : {}),
+      },
       webhookEventId: run.eventId,
     });
 
@@ -704,9 +722,24 @@ async function buildContext(eventId: string): Promise<RunContext | Settled | nul
   // config, which the caller turns into a FAILED (replayable) event.
   const modules = await resolveConversionModules(principal);
   // Throws a ZodError naming the missing or malformed concept.
-  const parsed = parseArkPayload(event.raw, mapping);
+  // The last-resort dedupe key, hashed HERE because hashing needs a server
+  // runtime and @crm/shared is bundled for the browser too. Over the stored
+  // `raw` in canonical form, so a redelivery that re-serialises its JSON
+  // still lands on the same digest.
+  const bodyFingerprint = createHash('sha256')
+    .update(canonicalJson(event.raw), 'utf8')
+    .digest('hex');
+  const { event: parsed, dedupeKey } = parseArkEvent(event.raw, mapping, bodyFingerprint);
 
-  return { eventId, principal, modules, mapping, event: parsed, deposit: depositOf(parsed) };
+  return {
+    eventId,
+    principal,
+    modules,
+    mapping,
+    event: parsed,
+    deposit: depositOf(parsed),
+    dedupeKey,
+  };
 }
 
 async function processArkJob(job: Job): Promise<{ status: string; outcome?: string; error?: string }> {
