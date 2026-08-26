@@ -1,4 +1,10 @@
-import { filterTreeSchema, type FilterNode, type SortSpec } from '@crm/shared';
+import {
+  filterTreeSchema,
+  systemFilterListSchema,
+  type FilterNode,
+  type SortSpec,
+  type SystemFilterSelection,
+} from '@crm/shared';
 
 /**
  * The list screen's URL state: what is in the query string, what is in the
@@ -17,11 +23,21 @@ import { filterTreeSchema, type FilterNode, type SortSpec } from '@crm/shared';
  *
  *   query string  `view` `sort` `page` `size` `q` `f`
  *                 — ids, keys and numbers. The server renders from these.
- *   fragment      `#f=<base64url(json)>` — the ad-hoc filter tree itself.
+ *   fragment      `#f=<base64url(json)>` — the ad-hoc filter tree itself,
+ *                 and `#s=<base64url(json)>` — the System Defined Filters
+ *                 ticked on the rail.
  *                 A fragment is never sent to any server, never logged and
  *                 never in a Referer, yet it survives a copied link, a reload
  *                 and the back button. It is the one part of a URL that is
  *                 purely the browser's.
+ *
+ * The system selection carries no record data — it is a list of filter IDS and
+ * at most a picked enum value — so a query parameter would have been legal for
+ * it. It rides in the fragment anyway, for a mechanical reason: it and the
+ * tree are ONE filter, and splitting them across the two halves of a URL would
+ * let a copied link keep one and lose the other. A link that drops half of an
+ * AND matches MORE rows than the filter it displays, which is the single
+ * failure this whole file is arranged to prevent.
  *
  * `f=1` in the query string is the PRESENCE flag, carrying no values. It is
  * what lets the server skip its own record query entirely when a filter is
@@ -132,6 +148,22 @@ export function buildListHref(
 /** `#f=` — the filter tree. Never a query parameter; see the file header. */
 const HASH_KEY = 'f';
 
+/** `#s=` — the System Defined Filters ticked on the rail. */
+const SYSTEM_KEY = 's';
+
+/**
+ * One ticked System Defined Filter, as it travels to
+ * `POST /api/modules/:slug/records/query` in its `system` array.
+ *
+ * The shared type, not a local copy: `SystemFilterSelection` is what the query
+ * envelope's `system` array is made of, so a URL that carries something this
+ * alias accepts is a URL the route accepts too. Whether a given module can
+ * ANSWER a row is a separate question and not one a URL can settle — the
+ * server decides it, and says so with a 400 naming the id rather than by
+ * dropping the condition.
+ */
+export type SystemSelection = SystemFilterSelection;
+
 function toBase64Url(text: string): string {
   const bytes = new TextEncoder().encode(text);
   let binary = '';
@@ -150,6 +182,21 @@ function fromBase64Url(text: string): string {
 /** The fragment for a tree, ready to append to an href. */
 export function encodeFilterHash(node: FilterNode): string {
   return `#${HASH_KEY}=${toBase64Url(JSON.stringify(node))}`;
+}
+
+/**
+ * The fragment for a whole ad-hoc filter — the tree, the system selection, or
+ * both. Empty string when there is neither, which is what "no filter" looks
+ * like in a URL.
+ *
+ * `encodeListHash(node, [])` is byte-for-byte `encodeFilterHash(node)`, so
+ * every link written before the system rows existed still reads back.
+ */
+export function encodeListHash(node: FilterNode | null, system: readonly SystemSelection[]): string {
+  const parts: string[] = [];
+  if (node !== null) parts.push(`${HASH_KEY}=${toBase64Url(JSON.stringify(node))}`);
+  if (system.length > 0) parts.push(`${SYSTEM_KEY}=${toBase64Url(JSON.stringify(system))}`);
+  return parts.length === 0 ? '' : `#${parts.join('&')}`;
 }
 
 /**
@@ -179,6 +226,36 @@ export function readFilterHash(hash: string): FilterNode | null {
     throw new Error('The filter in this link could not be read.');
   }
   const parsed = filterTreeSchema.safeParse(json);
+  if (!parsed.success) throw new Error('The filter in this link is not a valid filter.');
+  return parsed.data;
+}
+
+/**
+ * Read the ticked System Defined Filters back out of the fragment.
+ *
+ * Same contract as `readFilterHash`, and parsed the same way: through
+ * `systemFilterListSchema`, the very schema the route parses the body's
+ * `system` array with. One definition in packages/shared, two callers — never
+ * a second, weaker copy here.
+ *
+ * An ABSENT `#s=` is an empty list; a PRESENT one that does not parse throws.
+ * Nothing in between, and no entry is ever skipped: skipping one drops a
+ * condition out of an AND, and an AND with a condition missing matches more
+ * rows, not fewer.
+ */
+export function readSystemHash(hash: string): SystemSelection[] {
+  const raw = hash.startsWith('#') ? hash.slice(1) : hash;
+  if (raw === '') return [];
+  const encoded = new URLSearchParams(raw).get(SYSTEM_KEY);
+  if (encoded === null || encoded === '') return [];
+
+  let json: unknown;
+  try {
+    json = JSON.parse(fromBase64Url(encoded));
+  } catch {
+    throw new Error('The filter in this link could not be read.');
+  }
+  const parsed = systemFilterListSchema.safeParse(json);
   if (!parsed.success) throw new Error('The filter in this link is not a valid filter.');
   return parsed.data;
 }

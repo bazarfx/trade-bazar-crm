@@ -14,52 +14,70 @@ import { Checkbox, FieldError, Popup, PopupFooter } from '@/components/ui';
  * editor, roles matrix, review queue) — a dialog that asks for one name is not
  * one of them.
  *
- * ALL THREE MEASURED off `tools/figma/Zoho.fig`. The pop-up frames are all
- * named "Pop up", so they were located by their title text:
+ * ALL THREE MEASURED off `tools/figma/Zoho.fig`, and RE-MEASURED node by node
+ * on 26 Aug 2026 (absolute positions walked out of `nodes.json`, since
+ * `tools/figma/inspect.js` prints sizes but not coordinates). The pop-up frames
+ * are all named "Pop up", so they were located by their title text:
  *
  *   511x252  "Save Filter"               in `…_When user apply the filter then
  *                                            a save filter option pop ups`
  *   511x252  "Edit Name of Save Filter"  in `…_Saved filter Edit`
  *   511x203  "Delete Saved Filter"       in `…_Saved filter delete`
  *
- * Common frame, identical in all three:
+ * Common frame, identical in all three (offsets relative to the panel's own
+ * top-left, which is centred in the 1440x1024 artboard — 465,411 for the 203
+ * and 465,386 for the two 252s):
  *
  *   FRAME "Pop up"  511x…  flex-col gap:24 pad:24  bg:#ffffff
  *                          border:#e5e7eb 1px  r:8
+ *                          shadow 0 -4px 36px #969696@16%
  *     FRAME  Title        @24,24  463x22  flex-row gap:16
- *            TEXT  Medium 18px #111827 + INSTANCE Icon/X 20x20 @443,0
+ *            TEXT  Inter Medium 18px lh:100% #111827
+ *            INSTANCE Icon/X 20x20 @443,0 — flush right of the 463
  *     VECTOR Separator    @24,70  463x0   border:#e5e7eb 1px
  *     FRAME  Content      @24,94  463x…   flex-col gap:20
  *     FRAME  Frame 482701 @24,…   463x40  flex-row gap:18
- *            two FRAME "Buttons" 222x40, pad 8/18, r:4, label Medium 16px
+ *            two FRAME "Buttons" 222x40, pad 8/18, gap 8, r:4,
+ *            label Inter Medium 16px lh:1.5 → 24; drawn at x=0 and x=240
  *
  * Every one of those numbers lives in `components/ui/popup.tsx`, which is why
  * nothing below restates a width, a gap or a button size. The heights differ
  * (252 vs 203) purely because the Content column differs, and the primitive is
  * content-sized for exactly that reason — the file itself draws this same
- * frame at 203, 242, 252, 353 and 378 depending on what is in it.
+ * frame at 203, 242, 252, 353 and 378 depending on what is in it. The 203
+ * checks out exactly: 24 + 22 + 24 + 0 + 24 + 21 + 24 + 40 + 24.
  *
  * Content, measured per pop-up:
  *
  *   Save / Edit  Content 463x70 → FRAME "Text Area" flex-col gap:8
  *                  FRAME "Label"      463x21  TEXT "Filter Name"
- *                                             Regular 14px #111827
+ *                                             Inter Regular 14px lh:1.5 → 21
+ *                                             #111827
  *                  FRAME "Input Base" 463x41  flex-row gap:12 pad:10/12
- *                                             bg:#ffffff border:#e5e7eb r:4
- *                    TEXT "Enter..."          Regular 14px #6b7280
+ *                                             bg:#ffffff border:#e5e7eb 1px
+ *                                             INSIDE  r:4
+ *                    TEXT "Enter..."          Inter Regular 14px lh:1.5
+ *                                             #6b7280
+ *                  (21 + 8 + 41 = 70 — the Text Area's height is derived, so
+ *                   the 21px line-height below is load-bearing, not decorative)
  *   Delete       Content 463x21 → FRAME "Text Area" → FRAME "Label"
  *                  TEXT "Are you sure you want to delete this filter?"
- *                                             Regular 14px #111827
+ *                                             Inter Regular 14px lh:1.5 → 21
+ *                                             #111827
  *
  * Footer, measured:
  *
  *   Save / Edit  "Cancel" bg:#f6f8fa border:#e5e7eb label #111827
- *                "Save"   bg:#00667a             label #ffffff
+ *                "Save"   bg:#00667a  no border    label #ffffff
  *   Delete       "Cancel" bg:#f6f8fa border:#e5e7eb label #111827
- *                "Delete" bg:#ef4444             label #ffffff
+ *                "Delete" bg:#ef4444  no border    label #ffffff
  *
  * → `PopupFooter`'s `cancel` (neutral) and `next` slots, the second with tone
  *   `primary` or `destructive`. The slot ORDER is the file's, not a choice.
+ *
+ * The kebab that OPENS the rename and delete pop-ups is measured in
+ * `filter-panel.tsx` (`Group 3`, 98x32, "Rename" then "Delete") — the rail
+ * raises the intent, these three only render it.
  */
 
 /* ------------------------------------------------------------------------- */
@@ -84,13 +102,19 @@ import { Checkbox, FieldError, Popup, PopupFooter } from '@/components/ui';
  * not a visible focus indicator for anyone with reduced colour vision.
  */
 const POPUP_INPUT =
-  'h-[41px] w-full rounded border border-border bg-surface px-3 text-sm text-heading ' +
+  // leading-[21px]: the file's 14px text carries lineHeight 1.5 RAW → 21, and
+  // `text-sm` pairs 14px with 20. One pixel, but it is the pixel that makes
+  // 21 + 8 + 41 come to the Text Area's measured 70.
+  'h-[41px] w-full rounded border border-border bg-surface px-3 text-sm leading-[21px] text-heading ' +
   'placeholder:text-body ' +
   'focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary ' +
   'disabled:cursor-not-allowed disabled:opacity-60';
 
-/** The file's `Label` row: Regular 14px `#111827`, 8px above the input. */
-const POPUP_LABEL = 'mb-2 block text-sm text-heading';
+/**
+ * The file's `Label` row: 463x21 — Inter Regular 14px, lineHeight 1.5 RAW → 21,
+ * `#111827`, and the Text Area's own `gap:8` under it.
+ */
+const POPUP_LABEL = 'mb-2 block text-sm leading-[21px] text-heading';
 
 /**
  * The file's `Text Area` column — label over control, `flex-col gap:8`. The
@@ -142,16 +166,24 @@ function NameField({
  * The two publish toggles, and why they are here when the file draws no such
  * row on these three pop-ups.
  *
- * The file's own Content frame carries a `Checkboxes Component / Checkbox`
- * node (290x24, `flex-row gap:8`, a 20x20 box) — measured `visible: false` in
- * every instance, because Zoho's Save Filter dialog has nothing to put in it.
- * Ours does: `SavedView` stores `isShared` and `isDefault`, and both change
- * what OTHER people see when they open the module. Dropping the row to hold
- * the frame at exactly 252 tall would delete a capability the API already
- * enforces; the Content column is `flex-col gap:20` precisely so it can carry
- * more than one row, and the file itself draws this frame at five different
- * heights. So the WIDTH (511) is held and the height follows the content,
- * which is the rule CLAUDE.md actually states.
+ * The file's `Text Area` carries a `Checkboxes Component / Checkbox` node
+ * (290x24, `flex-row gap:8`, a 20x20 box) — measured `visible: false` in every
+ * instance, because Zoho's Save Filter dialog has nothing to put in it. Ours
+ * does: `SavedView` stores `isShared` and `isDefault`, and both change what
+ * OTHER people see when they open the module. Dropping the row to hold the
+ * frame at exactly 252 tall would delete a capability the API already
+ * enforces, and the file itself draws this frame at 203/242/252/353/378 — only
+ * the WIDTH (511) is fixed, the height follows the content, which is the rule
+ * CLAUDE.md actually states.
+ *
+ * RE-MEASURED 26 Aug 2026 and MOVED: that hidden slot is a child of `Text
+ * Area` (`flex-col gap:8`), sitting after `Input Base` — a sibling of the
+ * label and the input, not a second row of the `Content` column. It was
+ * rendered as a Content row here, which put it on Content's `gap:20`. It now
+ * sits in the Text Area on the measured 8, 12px tighter and in the file's own
+ * slot. (Hidden nodes are excluded from auto-layout, so their stale transform
+ * says nothing; the PARENT and the parent's gap are what is measurable, and
+ * both are unambiguous.)
  */
 function ShareToggles({
   slug,
@@ -293,23 +325,29 @@ export function SaveViewPopup({
         />
       }
     >
-      <NameField
-        id="saved-view-name"
-        label="Filter Name"
-        value={name}
-        onChange={setName}
-        track={`${slug}.view.save.name`}
-        error={error}
-      />
-      <ShareToggles
-        slug={slug}
-        labelPlural={labelPlural}
-        canShare={canShare}
-        isShared={isShared}
-        isDefault={isDefault}
-        onShared={setIsShared}
-        onDefault={setIsDefault}
-      />
+      {/* ONE `Text Area` — `flex-col gap:8`. The label, the `Input Base` and
+          the file's `Checkboxes Component / Checkbox` slot are all children of
+          it, so the toggles ride the measured 8 rather than the Content
+          column's 20. See the note on ShareToggles. */}
+      <div className="flex flex-col gap-2">
+        <NameField
+          id="saved-view-name"
+          label="Filter Name"
+          value={name}
+          onChange={setName}
+          track={`${slug}.view.save.name`}
+          error={error}
+        />
+        <ShareToggles
+          slug={slug}
+          labelPlural={labelPlural}
+          canShare={canShare}
+          isShared={isShared}
+          isDefault={isDefault}
+          onShared={setIsShared}
+          onDefault={setIsDefault}
+        />
+      </div>
     </Popup>
   );
 }
@@ -449,18 +487,29 @@ export function DeleteViewPopup({ slug, view, onDeleted, onClose }: DeleteViewPo
         />
       }
     >
-      <div>
-        <p className="text-sm text-heading">Are you sure you want to delete this filter?</p>
+      {/* The file's `Text Area` — flex-col gap:8, holding the measured `Label`
+          line. Its 463x21 is what makes the panel come to exactly 203. */}
+      <div className="flex flex-col gap-2">
+        <p className="text-sm leading-[21px] text-heading">
+          Are you sure you want to delete this filter?
+        </p>
         {/* Which one. truncate: a view name is user-authored and unbounded,
             and a wrapped name would push the footer past the measured frame. */}
-        <p className="mt-1 truncate text-xs text-body" title={view.name}>
+        <p className="truncate text-xs text-body" title={view.name}>
           {view.name}
         </p>
         {view.isShared || view.isDefault ? (
           // Deleting a published view or a role default changes other people's
           // screens, which is why the API puts it behind the layout gate. Say
           // so BEFORE the button is pressed rather than after it 403s.
-          <p className="mt-2 text-xs text-muted">
+          //
+          // Inside the Text Area on its measured gap:8, not a second Content
+          // row on gap:20. The file's own slot for a consequence note under a
+          // confirmation line is the `Text Area`'s hidden 12px TEXT ("We will
+          // notify the customer and issue a full refund") — a direct child of
+          // Text Area, i.e. 8 below the line it qualifies, which is also the
+          // gap the name echo above already rides.
+          <p className="text-xs text-muted">
             {view.isDefault
               ? 'This is the default view — everyone opening this module lands on it.'
               : 'This view is shared, so it disappears for everyone who uses it.'}

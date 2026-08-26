@@ -141,6 +141,16 @@ interface DelegateShape {
   groupColumn: string | null;
   /** column carrying the Status foreign key; null = this table has no status */
   statusColumn: string | null;
+  /**
+   * Column carrying the CAMPAIGN a record came in on; null = rows here have no
+   * campaign link. Read structurally, exactly like `ownerColumn` and
+   * `statusColumn` above: the "Campaigns" system filter asks whether a record
+   * is attributable to a campaign, and it answers that off THIS declaration —
+   * never off a module slug and never off a field key, both of which are
+   * Admin-editable data. A table that grows the column gets the filter; one
+   * that has none reports the row unavailable and says why.
+   */
+  campaignColumn: string | null;
   /** column carrying the record's language — half of the dedupe match key */
   languageColumn: string | null;
   /**
@@ -226,8 +236,13 @@ export interface LedgerShape {
   amountColumn: string;
   atColumn: string;
   /** column linking a ledger row to the raw webhook event that produced it —
-   *  the idempotency key for replays, and the row's evidence */
+   *  the row's evidence, and what makes REPLAYING a stored event safe */
   eventColumn: string;
+  /** column holding the key derived from the EVENT rather than from our
+   *  receipt of it, so a partner REDELIVERING the same deposit computes the
+   *  same value and the table's unique index refuses the second row. See
+   *  `depositDedupeKey` in @crm/shared. */
+  dedupeColumn: string;
   /** column marking the first deposit (the FTD) */
   firstColumn: string;
   /** ON THE PARENT: the derived total and count */
@@ -318,6 +333,9 @@ const GENERIC_SHAPE: DelegateShape = {
   // on the row, and routes as CAMPAIGN.
   groupColumn: null,
   statusColumn: 'statusId',
+  // No campaign link either: an Admin-created module's rows are not
+  // attributable to a campaign, so the "Campaigns" row reports why.
+  campaignColumn: null,
   languageColumn: 'language',
   sourceColumn: null,
   createdByColumn: 'createdById',
@@ -354,6 +372,7 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
     ownerColumn: 'ownerId',
     groupColumn: 'groupId',
     statusColumn: 'statusId',
+    campaignColumn: 'campaignId',
     languageColumn: 'language',
     sourceColumn: 'source',
     createdByColumn: 'createdById',
@@ -383,6 +402,9 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
     // deal's origin is its linked lead, one hop away.
     groupColumn: null,
     statusColumn: 'statusId',
+    // A deal keeps the campaign its lead arrived on, so the attribution
+    // survives the conversion.
+    campaignColumn: 'campaignId',
     languageColumn: 'language',
     sourceColumn: null,
     // Deal has no createdById: a deal is created BY the conversion pipeline,
@@ -410,6 +432,7 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
       amountColumn: 'amount',
       atColumn: 'depositedAt',
       eventColumn: 'webhookEventId',
+      dedupeColumn: 'dedupeKey',
       firstColumn: 'isFtd',
       totalColumn: 'totalDeposited',
       countColumn: 'depositCount',
@@ -426,6 +449,8 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
     ownerColumn: null,
     groupColumn: null,
     statusColumn: null,
+    // A campaign IS the campaign; it is not linked to one.
+    campaignColumn: null,
     languageColumn: null,
     sourceColumn: null,
     createdByColumn: null,
@@ -450,6 +475,9 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
     // is never round-robined to a team.
     groupColumn: null,
     statusColumn: null,
+    // A user is staff, not an acquired record: nothing about them is
+    // attributable to a campaign.
+    campaignColumn: null,
     // `languages` is a multi-select of what a user SPEAKS, not the record's own
     // language, and a user is never dedupe-matched on it.
     languageColumn: null,
@@ -496,6 +524,8 @@ const DELEGATE_SHAPES: Record<string, DelegateShape> = {
     ownerColumn: null,
     groupColumn: null,
     statusColumn: null,
+    // A deposit's campaign is its deal's, one hop away — not a column here.
+    campaignColumn: null,
     languageColumn: null,
     sourceColumn: null,
     createdByColumn: null,
@@ -992,6 +1022,16 @@ function userWhereFor(
     }
   }
 
+  // System filters. Each arrives as its OWN fragment and is pushed separately:
+  // two rows can narrow the same key — `touched` and `untouched` both narrow
+  // `id` — and merging them into one object would drop one of the two, turning
+  // a contradiction (which correctly matches nothing) into a result set. An
+  // empty fragment is `untouched` on a module nothing has been touched in,
+  // which is a real answer and narrows nothing.
+  for (const part of query.systemWhere ?? []) {
+    if (Object.keys(part).length > 0) parts.push(part);
+  }
+
   const term = query.search?.trim();
   if (term) {
     const tree = searchTree(resolvable, term);
@@ -1043,6 +1083,20 @@ export function combine(scope: Row, user: Row): Row {
 /** Filter, sort, search and page — every part optional. */
 export interface RecordQuery {
   filters?: FilterNode | null;
+  /**
+   * System-filter narrowing, ALREADY RESOLVED to where-fragments by
+   * `records/system-filters.ts` — one fragment per selected row.
+   *
+   * Resolved upstream rather than here because two of the three answerable
+   * rows read the audit log, which has no relation to any record table: they
+   * come back as an id set, not as a condition the filter compiler could
+   * build. What this file does with them is the part that matters — they are
+   * ANDed, never merged; see `userWhereFor`.
+   *
+   * NOT reachable from a route: `listModuleRecords` takes the SELECTIONS and
+   * resolves them itself, so a handler cannot post a raw Prisma `where`.
+   */
+  systemWhere?: Row[] | null;
   sort?: SortSpec[] | null;
   search?: string | null;
   /** 1-based. Wins over `skip` when both are given. */

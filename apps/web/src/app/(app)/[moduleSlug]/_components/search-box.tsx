@@ -63,7 +63,13 @@ export function SearchBox({ slug, query, limits }: SearchBoxProps) {
         onChange={(e) => setTerm(e.target.value)}
         // pr-9 keeps the caret clear of the magnifier; font-light is the
         // file's placeholder weight, which the shared Input does not assume.
-        className="h-9 w-full pr-9 font-light placeholder:font-light"
+        //
+        // The last rule hides WebKit's own clear button, which `type="search"`
+        // draws in exactly the 10px-from-the-right slot the file gives the
+        // magnifier — two glyphs on top of each other, and only once something
+        // has been typed. Clearing stays a select-all-and-delete, which is what
+        // every other field on the screen offers.
+        className="h-9 w-full pr-9 font-light placeholder:font-light [&::-webkit-search-cancel-button]:hidden"
         data-track={`${slug}.list.search.input`}
       />
       <SearchIcon className="pointer-events-none absolute right-2.5 top-1/2 h-5 w-5 -translate-y-1/2 text-body" />

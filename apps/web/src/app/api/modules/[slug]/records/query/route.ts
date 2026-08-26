@@ -34,6 +34,11 @@ export const POST = guarded<{ slug: string }>(async (req, principal, { slug }) =
   const input = await parseBody(req, recordQuerySchema);
   const { records, total, page, pageSize } = await listModuleRecords(principal, slug, {
     ...(input.filters ? { filters: input.filters } : {}),
+    // The system group travels as SELECTIONS — ids and their values — not as a
+    // resolved condition: whether this module can answer a row is decided in
+    // the engine, against its storage shape, and an unavailable one is a 400
+    // that names it rather than a filter the user believes is applied.
+    ...(input.system ? { system: input.system } : {}),
     ...(input.sort ? { sort: input.sort } : {}),
     ...(input.search ? { search: input.search } : {}),
     ...(input.page !== undefined ? { page: input.page } : {}),

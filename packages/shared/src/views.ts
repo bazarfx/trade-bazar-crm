@@ -16,6 +16,7 @@ import {
   type FilterNode,
   type ViewSpec,
 } from './filter.js';
+import { systemFilterListSchema } from './system-filters.js';
 
 /**
  * The saved-view contract — the ONE definition of what a filter tree, a sort
@@ -410,6 +411,16 @@ export interface SavedViewDto extends ViewSpec {
 export const recordQuerySchema = z
   .object({
     filters: filterTreeSchema.nullish(),
+    /**
+     * The System Defined Filters group on the rail. A SEPARATE key from
+     * `filters`, not a branch of the tree: a system filter names no field, so
+     * it has no `fieldKey`, no `fieldType` and no operator for the compiler to
+     * map — and folding it into the tree would mean `compileFilter` growing a
+     * case that is not about fields at all. They AND with `filters` and with
+     * each other; see `records/system-filters.ts` for how each is answered and
+     * why six of the nine currently cannot be.
+     */
+    system: systemFilterListSchema.nullish(),
     sort: z.array(sortSpecSchema).max(MAX_SORT_KEYS).nullish(),
     search: z.string().trim().max(MAX_FILTER_VALUE_LENGTH).nullish(),
     page: z.number().int().min(1).max(100_000).optional(),
