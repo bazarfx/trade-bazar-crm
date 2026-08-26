@@ -106,11 +106,22 @@ picklist option or field label by name.
   Apply Auto Mapping, Assign Default Value, unsaved-changes guards), **1015**
   (Create New Fields), and **1152** (the import stage panels, which sit in the
   page rather than over it). Full screen is for the big authoring surfaces the
-  file does not draw — the record form, field builder, layout editor, roles
-  matrix, review queue.
+  file does not draw — field builder, layout editor, roles matrix, review queue.
   *This replaces the earlier "no small modals anywhere" rule, which the file
   contradicts. Superseded 22 Aug 2026 on the client's instruction to follow the
   Figma strictly.*
+- **The record form is a PAGE, not an overlay** — `/[moduleSlug]/new` and
+  `/[moduleSlug]/[recordId]/edit`. Measured 26 Aug 2026: the six
+  `CRM _ Leads_Create Leads` frames draw the sidebar (256) and the top bar
+  (1184x68) around the form, with the title in the top bar at @286,21, so an
+  overlay would cover chrome the file shows. The layout is measured too —
+  a 1152 content wrapper, section headers at 16px Semi Bold with a collapse
+  chevron, a full-width rule under each, and **four 273-wide columns at a 12px
+  gap** across 1128; actions sit ABOVE the form on the right (400x38: 132 + 12 +
+  122 + 12 + 122) with the save state on the left. The file draws no sticky
+  footer and no section navigator, so the form has neither.
+  *This corrects the line above, which listed the record form as full-screen on
+  the assumption that the file did not draw it. It does.*
 - **Import is a PAGE, not an overlay** — `/[moduleSlug]/import`, with the
   sidebar and top bar in place, a five-chip stage strip, and a 1152-wide panel
   whose height changes per stage.

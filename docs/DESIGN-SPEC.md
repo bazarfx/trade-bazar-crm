@@ -238,24 +238,51 @@ without it produces a screen that lies.
 
 ## Screen: Create Leads (1440×1024)
 
-A full-screen form over the canvas. This is the record create/edit form for
-EVERY module — Leads is the module whose `FormSection` + `FieldDefinition`
-rows it renders.
+Re-measured 26 Aug 2026, and the earlier reading of it was wrong in two ways
+that mattered — it is **not** an overlay and it has **no section navigator**.
+Six `CRM _ Leads_Create Leads` frames, plus 13 `-Drop Down` states and one
+`-cANCEL`.
 
-- Title "Create {Module}"
-- **Numbered sticky section navigator**, left: `1. Lead Information`,
-  `2. Personal Information`, `3. ARK Information`. These are exactly the three
-  seeded `FormSection` rows — the navigator is generated, never a list in code.
-  This is the "sticky section navigator, never a squeezed grid" rule in
-  `CLAUDE.md` made visible.
-- Field rows carry: label, help text under the label, placeholder (`Enter...`,
-  `Write here...`, `DD/MM/YYYY` on dates), and a `0/50` character counter where
-  a max length applies.
-- Section separators are full-width 1px lines `#e5e7eb`.
-- Footer actions: **Save** (primary), **Save as New**, **Cancel**, plus an
-  "All changes Saved" status line.
+It is a **PAGE**: the frame draws `Sidebar - Open` (256 wide) and the top bar
+(`Rectangle 2`, 1184×68) around the form, with the title "Create Leads" in the
+top bar at @286,21 — the same slot every other screen uses. An overlay would
+cover chrome the file shows.
 
-Depends on: field engine ✅, layout engine ✅, record engine ⬜ (create path).
+Measured geometry:
+
+| Node | Value |
+|---|---|
+| Content wrapper | x=272, 1152 wide (the shell's own `p-4` at 1440) |
+| Field grid | 1128 wide @284 — **four columns of 273, gap 12** |
+| Field row pitch | 69 (57 tall + 12) |
+| `Text Area` | 273×57 = `Label` 15 + gap 8 + `Input Base` 34 |
+| `Label` | Inter Regular **12px** `#111827` |
+| `Input Base` | 273×34, pad 10/12, **`bg #ffffff`**, `border #e5e7eb`, `r:4` |
+| Placeholder | Inter Regular **10px** `#6b7280` — `Enter...`, `Write here...`, `DD/MM/YYYY` |
+| Section header | `Frame 482707` 1128×19: `N.` + label, Inter Semi Bold 16px ls 0.4, **`Icon / Chevron` 18×18 flush right** (sections collapse) |
+| Rule under header | 1152 wide, 1px `#e5e7eb`, 12px below the header, fields 12px below it |
+| Section gap | 36 between a section's last field row and the next header |
+| Actions | `Frame 482710` @1008,94 — 400×38 = 132 + 12 + 122 + 12 + 122, **above the form, right-aligned** |
+| — Save | 132×38 `bg #00667a`, white label |
+| — Save as New | 122×38 `bg #f6f8fa`, **`border #00667a`** |
+| — Cancel | 122×38 `bg #ffffff`, `border #e5e7eb` |
+| Save state | `Frame 482740` @284,105 — "All changes Saved" Inter Medium 13px **`#00667a`** + `charm:circle-tick` 16×16 |
+
+⚠️ The file draws **no sticky footer and no section navigator**. The earlier
+entry here claimed both, citing CLAUDE.md's "sticky section navigator" rule;
+that rule describes long forms in general, and this frame is the authority for
+this screen.
+
+⚠️ Four columns is the file's grid. `FormSection.columns` was capped at 3 in
+`sectionCreateSchema`, which made the designed layout unreachable from the UI —
+raised to 1–4 (default 4) on 26 Aug 2026, along with the `colSpan` cap, the
+layout editor's span picker and the section form's choices.
+
+The columns stay Admin config, so this is the Leads rows rendering, not a
+Leads-specific page. Built as `/[moduleSlug]/new` and
+`/[moduleSlug]/[recordId]/edit` over `record-form-screen.tsx`.
+
+Depends on: field engine ✅, layout engine ✅, record engine ✅.
 
 ## Screens: Sort, Filter by Leads, Saved Filters
 

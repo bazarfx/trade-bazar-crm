@@ -88,9 +88,24 @@ export function TopBar({ user }: { user: ShellUser }): ReactElement {
           256. `px-4` above gives 16 of that; the remaining 14 is `pl-[14px]`
           here. Both are measured, not chosen. `text-title` is the file's
           Medium 24px / ls 0.4 (tailwind.config.ts). Empty on screens that
-          declare no title, which is every screen the file does not draw. */}
+          declare no title, which is every screen the file does not draw.
+
+          THE FILL IS PURE BLACK, not `--heading`. Counting the 24px title
+          node at @286,21 on every 1440x1024 frame: #000000 66× ("Leads" 28,
+          "Import Leads" 24, "Create Leads" 14) against #111827 6×, all six of
+          those on Create-Leads variants. #000000 is a token —
+          `--globalcolors-neutral-100` in app/tokens.css — but it has no
+          Tailwind alias in tailwind.config.ts, which this file does not own,
+          so it is reached by var() exactly as button.tsx reaches
+          `--globalcolors-neutral-30/-40`. `text-heading` stays the right
+          answer for the 14px profile name below, which IS measured #111827.
+          (docs/DESIGN-SPEC.md still records the title as #111827 and needs the
+          same correction; that file is not this agent's to edit.) */}
       <h1
-        className="min-w-0 truncate pl-[14px] text-title font-medium text-heading"
+        className={
+          'min-w-0 truncate pl-[14px] text-title font-medium ' +
+          'text-[color:var(--globalcolors-neutral-100)]'
+        }
         title={title ?? undefined}
       >
         {title}

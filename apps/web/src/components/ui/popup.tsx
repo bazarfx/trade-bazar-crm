@@ -1,6 +1,14 @@
 'use client';
 
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { useOverlayStack } from '@/components/overlay/overlay-context';
 import { cn } from './button';
@@ -14,8 +22,10 @@ import { cn } from './button';
  * builder, layout editor, roles matrix, review queue); this owns everything the
  * file actually draws as a panel over the page.
  *
- * EVERY number below was read out of `tools/figma/Zoho.fig`, not recalled.
- * The `Pop up` frame, identical across all ten instances in the file:
+ * EVERY number below was read out of `tools/figma/Zoho.fig`, not recalled, and
+ * re-verified against the three saved-filter frames on 26 Aug 2026. The file
+ * draws 27 `Pop up` frames — 10 at 511, 1 at 1015, 16 at 1152 — and the shell
+ * is identical in all of them:
  *
  *   FRAME "Pop up"  511x252  flex-col gap:24 pad:24/24/24/24
  *                   bg:#ffffff  border:#e5e7eb 1px  r:8
@@ -28,9 +38,17 @@ import { cn } from './button';
  * agrees — 1015 → 967, 1152 → 1104 — so the padding is one value, `p-6`, and no
  * width needs its own inset.
  *
- * Drop shadow, measured off the same node: `0 -4px 36px` at 16% of #969696.
- * That grey is not in the token set; `--neutral-60` (#878787) is the nearest,
- * and `color-mix` applies the alpha without introducing a literal colour.
+ * Title type: Inter **Medium 18px**, line-height 100% → 22 tall, `#111827`.
+ * Verified on every `Pop up` in the file, not just these three.
+ *
+ * Drop shadow, measured off the same node: `0 -4px 36px` at 16% of #969696,
+ * spread 0. That grey is not in the token set; `--neutral-60` (#878787) is the
+ * nearest, and `color-mix` applies the alpha without introducing a literal
+ * colour.
+ *
+ * SCRIM: measured, not invented — `Rectangle 12`, 1440x1024, SOLID `#111827`
+ * at paint opacity 0.25, drawn under the `Pop up` in all eight frames that
+ * show one. See the note on the scrim element below.
  */
 export type PopupWidth = 511 | 1015 | 1152;
 
@@ -64,17 +82,95 @@ const FOOTER_SEPARATOR: Record<PopupWidth, boolean> = {
   1152: true,
 };
 
+/**
+ * Title-row CROSS axis, re-measured across all 27 `Pop up` frames on
+ * 26 Aug 2026 by reading `stackCounterAlignItems` off every `Title` node:
+ *
+ *   511  (10 frames)  unset → Figma's default **MIN**
+ *   1015 (1 frame)    unset → **MIN**
+ *   1152 (16 frames)  **CENTER**
+ *
+ * MIN is what the drawn geometry shows: the 511 Title is 463x22 with the 20x20
+ * `Icon/X` at rel y=0 (so 0…20, not 1…21), and the 1015 Title is 967x43 — a
+ * two-line heading — with its `Icon/X` also at rel y=0, i.e. **11px** above
+ * centre. `items-center` was 1px out on the 511s and 11px out on the 1015.
+ *
+ * The 1152's CENTER is recorded for completeness and is moot in the file: those
+ * Title rows hold a single 22px-tall TEXT in a 22-tall row and draw no close
+ * icon at all. We still render one (a dialog needs a pointer route out), so the
+ * measured value is what it gets.
+ */
+const TITLE_CROSS: Record<PopupWidth, string> = {
+  511: 'items-start',
+  1015: 'items-start',
+  1152: 'items-center',
+};
+
+/**
+ * Footer MAIN axis, from `stackPrimaryAlignItems` on the same 27 frames:
+ *
+ *   511   unset → **MIN**  — the two 222 Buttons are drawn at rel x=0 and 240
+ *                            in a FIXED 463 row (222+18+222 = 462), so the one
+ *                            pixel of slack sits on the RIGHT.
+ *   1015  **MAX** — Buttons at 505 and 745 of 967; 745+222 = 967, flush right.
+ *   1152  **MAX** — Buttons at 402, 642, 882 of 1104; 882+222 = 1104.
+ *
+ * Reaching this from `PopupFooter` needs the width, which the footer is handed
+ * as a `footer` PROP by the caller rather than composed by `Popup`. Context
+ * carries it instead, so no call site changes and a `PopupFooter` rendered
+ * outside a `Popup` — the import wizard's 1152 stage panel is one, it is a page
+ * panel and not a dialog — keeps the MAX the file gives that width anyway.
+ */
+const FOOTER_MAIN: Record<PopupWidth, 'start' | 'end'> = {
+  511: 'start',
+  1015: 'end',
+  1152: 'end',
+};
+
+const PopupWidthContext = createContext<PopupWidth | null>(null);
+
+/**
+ * The file's `Separator`: a VECTOR **463x0** (967x0 at 1015, 1104x0 at 1152)
+ * carrying a 1px `#e5e7eb` stroke at `align=CENTER`.
+ *
+ * Zero height is the load-bearing part. A Figma stroke does not participate in
+ * auto-layout, which is why the Delete panel's column comes to exactly 203:
+ * 24 + 22 + 24 + **0** + 24 + 21 + 24 + 40 + 24. `h-px bg-border` spent that
+ * pixel, so every 511 panel computed 204 and every 1015/1152 panel — which
+ * draws a SECOND separator above its footer — computed two tall.
+ *
+ * A spread-only box-shadow on a zero-height box paints the same 1px line, takes
+ * no layout space, and straddles the flow position the way a CENTER stroke
+ * straddles the vector. Same trick, and the same reason, as the panel's own 1px
+ * stroke below.
+ */
+function Separator() {
+  return (
+    <div
+      className="h-0 shrink-0"
+      style={{ boxShadow: '0 0 0 0.5px var(--border)' }}
+      aria-hidden="true"
+    />
+  );
+}
+
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
   'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-/** Icon/X, 20x20 in the file's Title row. Traced on the 24 grid the rest of
- *  this codebase's icons use (see the module list screen's icons.tsx). */
+/**
+ * Icon/X, drawn 20x20 in the file's Title row.
+ *
+ * Measured on the `Icon/X` SYMBOL: a 24x24 master whose cross is a **14x14**
+ * VECTOR at (5,5) — so the strokes run 5→19, not 6→18 — `strokeWeight 1.5`,
+ * `strokeCap ROUND`. Traced on the 24 grid the rest of this codebase's icons
+ * use (see the module list screen's icons.tsx).
+ */
 function CloseIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
       <path
-        d="M6 6l12 12M18 6L6 18"
+        d="M5 5l14 14M19 5L5 19"
         fill="none"
         stroke="currentColor"
         strokeWidth="1.5"
@@ -187,12 +283,20 @@ export function Popup({
 
   return createPortal(
     <div
-      // The file draws no scrim: each pop-up frame sits straight on the page
-      // artwork. A modal without one gives the user nothing to click to get
-      // out and no signal that the page behind is inert, so this is an
-      // addition, kept to the heading token at 40% rather than a new colour.
+      // The scrim IS in the file, and this was previously documented as absent.
+      // Measured `Rectangle 12` — a 1440x1024 ROUNDED_RECTANGLE sitting under
+      // the `Pop up` frame in every one of the eight frames that draw one
+      // (Save Filter, Saved filter Edit, Saved filter delete, Create Leads
+      // -cANCEL, and the four Import dialogs): SOLID `#111827` at paint
+      // opacity **0.25**. `#111827` is exactly `--heading`, so the only value
+      // here is the measured 25% — it was 40%, which read visibly darker than
+      // the file.
+      //
+      // The pop-up is centred in that 1440x1024: 511 wide at x=465 →
+      // (1440−511)/2 = 464.5, and 203 tall at y=411 → (1024−203)/2 = 410.5.
+      // Hence items-center justify-center rather than a measured offset.
       className="fixed inset-0 z-50 flex items-center justify-center p-6"
-      style={{ backgroundColor: 'color-mix(in srgb, var(--heading) 40%, transparent)' }}
+      style={{ backgroundColor: 'color-mix(in srgb, var(--heading) 25%, transparent)' }}
       data-track={`${trackPrefix}.popup.dismiss`}
       onMouseDown={(e) => {
         pressedScrim.current = e.target === e.currentTarget;
@@ -240,55 +344,62 @@ export function Popup({
           'outline-none',
         )}
       >
-        {/* Title row: 463x22, flex-row gap:16. The Icon/X sits at x=443 of 463
-            — flush right, i.e. space-between, whatever the auto-layout mode
-            in the file nominally says. */}
-        <div className="flex shrink-0 items-center justify-between gap-4">
-          <h2
-            id={titleId}
-            // Measured 18px Medium #111827. The project type scale
-            // (docs/DESIGN-SPEC.md, tailwind.config.ts) has no 18px step;
-            // `text-lg` is 16px, the nearest, and matches the brief's 14–16px.
-            // truncate: the title carries Admin-authored names with no length
-            // limit, and a wrapped title would push the panel taller than the
-            // file's measured heights.
-            className="min-w-0 truncate text-lg font-medium text-heading"
-            title={title}
-          >
-            {title}
-          </h2>
-          <button
-            type="button"
-            onClick={() => onCloseRef.current()}
-            aria-label="Close"
-            data-track={`${trackPrefix}.popup.close`}
-            className={
-              'inline-flex shrink-0 items-center justify-center rounded text-heading ' +
-              'hover:text-body focus-visible:outline-none focus-visible:ring-2 ' +
-              'focus-visible:ring-primary focus-visible:ring-offset-2 ' +
-              'focus-visible:ring-offset-surface'
-            }
-          >
-            <CloseIcon />
-          </button>
-        </div>
+        <PopupWidthContext.Provider value={width}>
+          {/* Title row: 463x22, flex-row gap:16, MAIN=SPACE_EVENLY (Figma's name
+              for space-between) — the Icon/X sits at x=443 of 463, flush right.
+              CROSS is per-width and measured; see TITLE_CROSS. */}
+          <div className={cn('flex shrink-0 justify-between gap-4', TITLE_CROSS[width])}>
+            <h2
+              id={titleId}
+              // Measured Inter **Medium 18px**, line-height 100% → the 22px-tall
+              // Title row, fill `#111827` (= --heading). EVERY `Pop up` in the
+              // file that carries a title draws it at 18/Medium, across all
+              // three widths — so this is the primitive's size, not one screen's.
+              //
+              // 18px is NOT on the project type scale (tailwind.config.ts stops
+              // at `lg` = 16px), so it is stated inline with the node named, the
+              // same way `h-[38px]` and `gap-[18px]` are. It used to render as
+              // `text-lg`, i.e. 2px small on every pop-up in the app.
+              //
+              // truncate: the title carries Admin-authored names with no length
+              // limit, and a wrapped title would push the panel taller than the
+              // file's measured heights.
+              className="min-w-0 truncate text-[18px] font-medium leading-[22px] text-heading"
+              title={title}
+            >
+              {title}
+            </h2>
+            <button
+              type="button"
+              onClick={() => onCloseRef.current()}
+              aria-label="Close"
+              data-track={`${trackPrefix}.popup.close`}
+              className={
+                'inline-flex shrink-0 items-center justify-center rounded text-heading ' +
+                'hover:text-body focus-visible:outline-none focus-visible:ring-2 ' +
+                'focus-visible:ring-primary focus-visible:ring-offset-2 ' +
+                'focus-visible:ring-offset-surface'
+              }
+            >
+              <CloseIcon />
+            </button>
+          </div>
 
-        {/* Separator @24,70 — 1px #e5e7eb across the inner width. It is a plain
-            child of the p-6 panel, so it spans exactly the measured 463/967/1104. */}
-        <div className="h-px shrink-0 bg-border" aria-hidden="true" />
+          {/* Separator @24,70 — 1px #e5e7eb across the inner width. It is a plain
+              child of the p-6 panel, so it spans exactly the measured 463/967/1104. */}
+          <Separator />
 
-        {/* Content: flex-col gap:20. `min-h-0` is what lets it shrink and
-            scroll inside `max-h-full` instead of overflowing the viewport. */}
-        <div className="flex min-h-0 flex-col gap-5 overflow-y-auto">{children}</div>
+          {/* Content: flex-col gap:20. `min-h-0` is what lets it shrink and
+              scroll inside `max-h-full` instead of overflowing the viewport. */}
+          <div className="flex min-h-0 flex-col gap-5 overflow-y-auto">{children}</div>
 
-        {footer !== undefined ? (
-          <>
-            {FOOTER_SEPARATOR[width] ? (
-              <div className="h-px shrink-0 bg-border" aria-hidden="true" />
-            ) : null}
-            <div className="shrink-0">{footer}</div>
-          </>
-        ) : null}
+          {footer !== undefined ? (
+            <>
+              {FOOTER_SEPARATOR[width] ? <Separator /> : null}
+              <div className="shrink-0">{footer}</div>
+            </>
+          ) : null}
+        </PopupWidthContext.Provider>
       </div>
     </div>,
     host,
@@ -333,8 +444,11 @@ export interface PopupFooterProps {
  * instruction; if that ordering is ever changed it must change in the .fig
  * first.
  *
- * On the 511 pop-ups only two buttons are drawn and they fill the row exactly
- * (222 + 18 + 222 = 462 of the 463 available), so the alignment is moot there.
+ * On the 511 pop-ups only two buttons are drawn and they fill the row to within
+ * a pixel (222 + 18 + 222 = 462 of the 463 available) — but the row's alignment
+ * is not the same one: `Frame 482701` leaves `stackPrimaryAlignItems` unset
+ * there, i.e. MIN, and the buttons are drawn at x=0 and x=240, putting the odd
+ * pixel on the RIGHT. See FOOTER_MAIN; the width arrives through context.
  *
  * These are NOT the `Button` primitive: `Button`'s secondary is `bg-surface`
  * (#ffffff), traced from the Leads header's Export/Import. The footer's
@@ -391,11 +505,27 @@ function FooterButton({
 }
 
 export function PopupFooter({ trackPrefix, cancel, previous, next }: PopupFooterProps) {
+  const width = useContext(PopupWidthContext);
+  const slots = (cancel ? 1 : 0) + (previous ? 1 : 0) + (next ? 1 : 0);
+  // MIN vs MAX per width — see FOOTER_MAIN. The `slots > 1` guard is honest
+  // about where the file stops speaking: every 511 footer it draws holds TWO
+  // 222 buttons that fill the 463 row to within a pixel, so MIN and MAX differ
+  // by 1 there and the measured MIN is free to take. It draws no single-button
+  // 511 footer at all, and packing a lone button left would move it 241px on
+  // the strength of a value the file never exercised — so one action keeps the
+  // right edge every other footer in the file uses.
+  const packLeft = width !== null && FOOTER_MAIN[width] === 'start' && slots > 1;
+
   return (
     // gap:18 is off the 4px grid and off the spacing scale; it is what the file
     // draws, and the arithmetic above only closes at 18. Same precedent as
     // Button's measured h-[38px].
-    <div className="flex items-center justify-end gap-[18px]">
+    <div
+      className={cn(
+        'flex items-center gap-[18px]',
+        packLeft ? 'justify-start' : 'justify-end',
+      )}
+    >
       {cancel ? (
         <FooterButton action={cancel} slot="cancel" trackPrefix={trackPrefix} fallbackTone="neutral" />
       ) : null}

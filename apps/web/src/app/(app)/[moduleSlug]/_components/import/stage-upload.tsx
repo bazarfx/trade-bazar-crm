@@ -10,7 +10,10 @@ import {
   type ImportCharset,
 } from '@crm/shared';
 import { api } from '@/lib/client-api';
-import { Button, FieldLabel, Select, cn } from '@/components/ui';
+import { Button, cn } from '@/components/ui';
+import { ChevronDownIcon } from '../icons';
+import { FileIcon } from './icons';
+import { CountBadge } from './stage-strip';
 import {
   CHARSET_LABELS,
   formatBytes,
@@ -23,9 +26,26 @@ import {
 /**
  * Stage 1 — Upload.
  *
- * The file's frame offers a drop target, a Browse Files button, a Charset
- * selector and a list of uploaded files. Three things in it are not built, and
- * each is a deliberate omission rather than an oversight:
+ * MEASURED off two frames of the family, which draw two different states of
+ * the same stage. Nothing here is a proportion or a guess:
+ *
+ *   EMPTY (frame [1], `Pop up` 1152x497)
+ *     `Text Area`  1104x303  flex-col gap:8, children 627 wide and CENTRED
+ *     ├ `Input Base` 627x171  #ffffff / #e5e7eb / r:4 / pad 10-12  ← drop target
+ *     │   `clarity:file-line` 28 (#00667a), "Drag & Drop the files here" 10px,
+ *     │   " - Or - " 10px, `Buttons` 65x18 "Brouse Files", formats line 10px
+ *     ├ `Input Base` 627x58   #edf2fe / #e5e7eb / r:4   ← the two limits
+ *     └ `Input Base` 627x58   #16a34a @6% / #16a34a     ← "Download Demo CSV"
+ *
+ *   FILLED (frames [2] and [4], `Pop up` 1152x386)
+ *     `Text Area`  1104x180  flex-col gap:8, children 463 wide and CENTRED
+ *     ├ `Input Base` 463x131  ← "Uploaded File" + the 16x16 count badge, the
+ *     │   439x28 file chip (#f6f8fa), the re-browse row, the formats line
+ *     └ `Text Area` 463x41 flex-row gap:8  ← `Label` 76 "Charset" (Regular
+ *         14px #6b7280) + `Input Base` 379x41 showing "Auto Detect"
+ *
+ * Three things the file draws are NOT built, and each is a deliberate omission
+ * rather than an oversight:
  *
  *  - **VCF and XLS.** The file lists four formats. A .vcf is a contact card
  *    with no columns at all and .xls is the pre-2007 BIFF binary, a different
@@ -36,9 +56,9 @@ import {
  *    one file" belongs to Zoho's multi-file flow, which stage 3 then maps to
  *    several modules. Our upload stages ONE file into ONE module; drawing a
  *    multi-file list we cannot honour would be theatre.
- *  - **"Download Demo CSV".** A demo file has to be generated from this
- *    module's own fields to be worth anything, and no endpoint serves one yet.
- *    A dead button is worse than no button.
+ *  - **"Download Demo CSV"** — the third card above. A demo file has to be
+ *    generated from this module's own fields to be worth anything, and no
+ *    endpoint serves one yet. A dead button is worse than no button.
  */
 
 export interface StageUploadProps {
@@ -62,6 +82,18 @@ export interface StageUploadProps {
 /** How many sample rows the preview shows. The point is to catch a wrong
  *  charset or a shifted header row by eye, which takes five rows, not fifty. */
 const PREVIEW_ROWS = 5;
+
+/**
+ * `Buttons` 65x18 — pad 8/18, `bg #f6f8fa`, `border #00667a 1px`, `r:4`, label
+ * Inter Medium **8px** `#00667a`. 8px is below every step of the type scale,
+ * so it is stated inline with the node named, the same way `h-[38px]` is.
+ */
+const BROWSE_BUTTON =
+  'inline-flex h-[18px] shrink-0 items-center justify-center rounded border border-primary ' +
+  'bg-background px-[18px] text-[8px] font-medium leading-none text-primary ' +
+  'disabled:cursor-not-allowed disabled:opacity-60 ' +
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ' +
+  'focus-visible:ring-offset-2 focus-visible:ring-offset-surface';
 
 export function StageUpload({
   slug,
@@ -104,9 +136,9 @@ export function StageUpload({
   /** Hand the first file over. Returns whether there was one — a drag that
    *  ends on the zone carrying nothing is not an upload. */
   function take(files: FileList | null): boolean {
-    const file = files?.[0];
-    if (!file || uploading) return false;
-    onFile(file);
+    const picked = files?.[0];
+    if (!picked || uploading) return false;
+    onFile(picked);
     return true;
   }
 
@@ -114,160 +146,229 @@ export function StageUpload({
     ' and ',
   );
 
+  /** The hidden native input every browse affordance opens. One instance: two
+   *  would be two ids for one job, and the drop zone and the filled card never
+   *  render at the same time. */
+  const picker = (
+    <input
+      ref={inputRef}
+      type="file"
+      accept={IMPORT_ACCEPT}
+      className="sr-only"
+      // Cleared after every pick so choosing the SAME file twice — after a
+      // failed parse, say — still fires a change event.
+      onChange={(e) => {
+        take(e.target.files);
+        e.target.value = '';
+      }}
+      data-track={`${trackPrefix}.file.pick`}
+    />
+  );
+
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h3 className="text-lg font-medium text-heading">Upload the {labelPlural}</h3>
-        <p className="mt-1 text-sm text-body">
-          One file, one module. Every row it holds is validated, assigned and logged exactly as a
-          record typed into the create form is — an import is not a side door around any of that.
-        </p>
-      </div>
-
-      <div
-        ref={zoneRef}
-        onDragOver={(e) => {
-          // Without preventDefault on BOTH dragover and drop the browser
-          // navigates to the file instead of handing it over.
-          e.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragging(false);
-          if (!take(e.dataTransfer.files)) return;
-          // The delegated interaction listener watches click, change and
-          // submit — a drop is none of the three, so a dropped file would be
-          // the one way into this wizard that leaves no trace in
-          // InteractionLog. Re-announcing the gesture as a `change` on the
-          // zone lets the ONE listener record it under this element's own
-          // `data-track`, rather than growing a second logger here.
-          zoneRef.current?.dispatchEvent(new Event('change', { bubbles: true }));
-        }}
-        className={cn(
-          'flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed px-6 py-10 text-center transition-colors',
-          dragging ? 'border-primary bg-subtle' : 'border-border bg-surface',
-        )}
-        data-track={`${trackPrefix}.file.drop`}
-      >
-        <p className="text-sm font-medium text-heading">Drag &amp; Drop the files here</p>
-        <p className="text-xs text-body">- Or -</p>
-        <Button
-          variant="secondary"
-          loading={uploading}
-          onClick={() => inputRef.current?.click()}
-          data-track={`${trackPrefix}.file.browse`}
-        >
-          {uploading ? 'Reading the file…' : 'Browse Files'}
-        </Button>
-        <input
-          ref={inputRef}
-          type="file"
-          accept={IMPORT_ACCEPT}
-          className="sr-only"
-          // Cleared after every pick so choosing the SAME file twice — after a
-          // failed parse, say — still fires a change event.
-          onChange={(e) => {
-            take(e.target.files);
-            e.target.value = '';
-          }}
-          data-track={`${trackPrefix}.file.pick`}
-        />
-        <p className="text-xs text-body">
-          Supported file formats are {formats}. The design also lists VCF and XLS; neither can be
-          read — a .vcf has no columns and .xls is a different binary format from .xlsx.
-        </p>
-        <p className="text-xs text-body">
-          A file can be at most {formatBytes(IMPORT_MAX_BYTES)} and {formatCount(IMPORT_MAX_ROWS)}{' '}
-          rows. A larger export has to be split into two files, which is a real answer — pretending
-          to accept it and failing halfway is not.
-        </p>
-      </div>
-
-      <div className="max-w-sm">
-        <FieldLabel htmlFor="import-charset">Charset</FieldLabel>
-        <div className="flex items-center gap-2">
-          <Select
-            id="import-charset"
-            value={charset}
-            onChange={(e) => onCharset(e.target.value as ImportCharset)}
-            data-track={`${trackPrefix}.charset.select`}
+    // `Text Area` — flex-col gap:8, its children CENTRED at a fixed measured
+    // width inside the 1104 content column.
+    <div className="flex flex-col items-center gap-2">
+      {staged === null ? (
+        <>
+          {/* `Input Base` 627x171 — the drop target. Not `border-dashed`: the
+              file draws a solid 1px #e5e7eb, and the dashed edge was this
+              screen's own invention. The dragging state recolours it, which is
+              the one thing a static frame cannot show. */}
+          <div
+            ref={zoneRef}
+            onDragOver={(e) => {
+              // Without preventDefault on BOTH dragover and drop the browser
+              // navigates to the file instead of handing it over.
+              e.preventDefault();
+              setDragging(true);
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragging(false);
+              if (!take(e.dataTransfer.files)) return;
+              // The delegated interaction listener watches click, change and
+              // submit — a drop is none of the three, so a dropped file would
+              // be the one way into this wizard that leaves no trace in
+              // InteractionLog. Re-announcing the gesture as a `change` on the
+              // zone lets the ONE listener record it under this element's own
+              // `data-track`, rather than growing a second logger here.
+              zoneRef.current?.dispatchEvent(new Event('change', { bubbles: true }));
+            }}
+            className={cn(
+              'flex h-[171px] w-[627px] max-w-full flex-col items-center justify-center gap-[10px]',
+              'rounded border px-3 py-[10px] text-center transition-colors',
+              dragging ? 'border-primary bg-background' : 'border-border bg-surface',
+            )}
+            data-track={`${trackPrefix}.file.drop`}
           >
-            {IMPORT_CHARSETS.map((value) => (
-              <option key={value} value={value}>
-                {CHARSET_LABELS[value]}
-              </option>
-            ))}
-          </Select>
-          {/* Stays live after the upload, and re-reads the same file when it
-              changes. Bytes are decoded ONCE, so the preview below is the only
-              moment a wrong charset is visible — a selector locked at that
-              moment would show the mangling and offer no way to fix it. */}
-          {staged !== null && file !== null ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              loading={uploading}
-              onClick={onReread}
-              data-track={`${trackPrefix}.charset.reread`}
-            >
-              Re-read
-            </Button>
-          ) : null}
-        </div>
-        <p className="mt-1 text-xs text-body">
-          Bytes are decoded once, on upload, so this is chosen before the file goes up rather than
-          after. A byte-order mark inside the file overrides the choice — the file saying what it
-          is beats a dropdown. XLSX carries its own encoding, so this applies to CSV only.
-        </p>
-      </div>
-
-      {staged ? (
-        <div className="rounded-lg border border-border bg-surface">
-          <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border px-4 py-3">
-            <h4 className="text-sm font-medium text-heading">Uploaded File (1)</h4>
-            <span className="text-xs text-body">
-              {formatCount(staged.batch.total)} rows · {staged.headers.length} columns · decoded as{' '}
-              {staged.batch.charset}
-            </span>
+            {/* `Frame 482726` — icon 28, gap 6, then the line. */}
+            <div className="flex flex-col items-center gap-[6px]">
+              <FileIcon className="h-7 w-7 text-primary" />
+              <p className="text-[10px] leading-[15px] text-body">Drag &amp; Drop the files here</p>
+            </div>
+            <p className="text-[10px] leading-[15px] text-body"> - Or - </p>
+            {/* `Frame 482727` — the button, gap 6, then the formats line. */}
+            <div className="flex flex-col items-center gap-[6px]">
+              <button
+                type="button"
+                disabled={uploading}
+                onClick={() => inputRef.current?.click()}
+                className={BROWSE_BUTTON}
+                data-track={`${trackPrefix}.file.browse`}
+              >
+                {uploading ? 'Reading the file…' : 'Browse Files'}
+              </button>
+              <p className="text-[10px] leading-[15px] text-body">
+                Supported file formats are {formats}
+              </p>
+            </div>
+            {picker}
           </div>
 
-          <div className="flex items-baseline gap-2 px-4 py-3 text-sm">
-            {/* The name is the user's own filename and has no length limit, so
-                it truncates and never wraps — the size beside it must stay on
-                the same line to read as one file. */}
-            <span
-              className="min-w-0 truncate font-medium text-heading"
-              title={staged.batch.filename}
-            >
-              {staged.batch.filename}
-            </span>
-            {file !== null ? (
-              <span className="shrink-0 text-body">— ({formatBytes(file.size)})</span>
-            ) : null}
+          {/* `Input Base` 627x58, `bg #edf2fe` (= --globalcolors-blue-10),
+              `border #e5e7eb`, `r:4`, two 10px lines at gap 4. The numbers are
+              read from the shared caps, never written out — the file's "25 MB
+              / 100,000 records" is Zoho's limit, not ours. */}
+          <div className="flex w-[627px] max-w-full flex-col gap-1 rounded border border-border px-3 py-[10px] bg-[var(--globalcolors-blue-10)]">
+            <p className="text-[10px] leading-[15px] text-body">
+              A file can be at most {formatBytes(IMPORT_MAX_BYTES)} and you can import at most{' '}
+              {formatCount(IMPORT_MAX_ROWS)} records to the {labelPlural} module.
+            </p>
+            <p className="text-[10px] leading-[15px] text-body">
+              One file per import. A larger export has to be split and imported as two files.
+            </p>
+          </div>
+        </>
+      ) : (
+        <>
+          {/* `Input Base` 463x131 — the uploaded-file card. Height follows its
+              content here because the preview beneath it does too; only the
+              463 is fixed. */}
+          <div className="flex w-[463px] max-w-full flex-col gap-[10px] rounded border border-border bg-surface px-3 py-[10px]">
+            {/* `Frame 482731` — label, gap 6, the 16x16 count badge. */}
+            <div className="flex items-center gap-[6px]">
+              <span className="text-[10px] leading-[15px] text-body">Uploaded File </span>
+              <CountBadge count={1} />
+            </div>
+
+            {/* `Frame 482728` 439x28 — `bg #f6f8fa`, `border #e5e7eb`, `r:4`,
+                pad 2/8, a 16 file icon and the name at Regular 8px. */}
+            <div className="flex h-7 items-center gap-[6px] rounded border border-border bg-background px-2 py-[2px]">
+              <FileIcon className="h-4 w-4 shrink-0 text-primary" />
+              {/* The name is the user's own filename with no length limit, so
+                  it truncates and never wraps — the size beside it must stay on
+                  the same line to read as one file. */}
+              <span className="min-w-0 truncate text-[8px] text-body" title={staged.batch.filename}>
+                {staged.batch.filename}
+                {file !== null ? ` - (${formatBytes(file.size)})` : ''}
+              </span>
+              <span className="ml-auto shrink-0 text-[8px] text-body">
+                {formatCount(staged.batch.total)} rows · {staged.headers.length} columns
+              </span>
+            </div>
+
+            {/* `Frame 482730` — the re-browse row, then the formats line. */}
+            <div className="flex items-center gap-[10px]">
+              <span className="text-[10px] leading-[15px] text-body">
+                Drag and drop the files here, -or-{' '}
+              </span>
+              <button
+                type="button"
+                disabled={uploading}
+                onClick={() => inputRef.current?.click()}
+                className={BROWSE_BUTTON}
+                data-track={`${trackPrefix}.file.browse`}
+              >
+                {uploading ? 'Reading the file…' : 'Browse Files'}
+              </button>
+            </div>
+            <p className="text-[10px] leading-[15px] text-body">
+              Supported file formats are {formats}
+            </p>
+            {picker}
           </div>
 
           {staged.truncated ? (
-            <p role="alert" className="mx-4 mb-3 rounded border border-warning px-3 py-2 text-xs text-heading">
+            <p
+              role="alert"
+              className="w-[463px] max-w-full rounded border border-warning px-3 py-2 text-[10px] leading-[15px] text-heading"
+            >
               That file holds {formatCount(staged.fileRows)} rows and one batch stages at most{' '}
               {formatCount(IMPORT_MAX_ROWS)}. The first {formatCount(staged.batch.total)} were
               staged and the rest were left out — import the remainder as a second file.
             </p>
           ) : null}
 
-          {/* The preview earns its place: a Windows-1252 export read as UTF-8
-              mangles every accented name silently, and this is the only moment
-              a human can see that before 40,000 rows are written. */}
-          <div className="overflow-x-auto border-t border-border">
+          {/* `Text Area` 463x41 flex-row gap:8 — `Label` 76 + `Input Base` 379.
+              A native select rather than the `Select` primitive: that
+              primitive's tones are 36 (canvas) and 34 (form) tall on their own
+              fills, and overriding a height or a background through
+              `className` resolves by stylesheet order rather than by attribute
+              order — the trap `PanelBody` documents. Same element, same
+              events, same keyboard behaviour; only the measured chrome
+              differs. */}
+          <div className="flex w-[463px] max-w-full items-center gap-2">
+            <label
+              htmlFor="import-charset"
+              className="w-[76px] shrink-0 text-sm leading-[21px] text-body"
+            >
+              Charset
+            </label>
+            <div className="relative min-w-0 flex-1">
+              <select
+                id="import-charset"
+                value={charset}
+                onChange={(e) => onCharset(e.target.value as ImportCharset)}
+                className={
+                  'h-[41px] w-full appearance-none rounded border border-border bg-surface ' +
+                  'px-3 pr-9 text-sm text-body focus:border-primary focus:outline-none ' +
+                  'focus:ring-1 focus:ring-primary'
+                }
+                data-track={`${trackPrefix}.charset.select`}
+              >
+                {IMPORT_CHARSETS.map((value) => (
+                  <option key={value} value={value}>
+                    {CHARSET_LABELS[value]}
+                  </option>
+                ))}
+              </select>
+              {/* `Icon / Chevron` 14x14, flush right inside the 12px inset. */}
+              <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-[14px] w-[14px] -translate-y-1/2 text-heading" />
+            </div>
+            {/* Stays live after the upload, and re-reads the same file when it
+                changes. Bytes are decoded ONCE, so the preview below is the
+                only moment a wrong charset is visible — a selector locked at
+                that moment would show the mangling and offer no way to fix
+                it. */}
+            {file !== null ? (
+              <button
+                type="button"
+                disabled={uploading}
+                onClick={onReread}
+                className={BROWSE_BUTTON}
+                data-track={`${trackPrefix}.charset.reread`}
+              >
+                Re-read
+              </button>
+            ) : null}
+          </div>
+
+          {/* The preview earns its place and is the one block with no node in
+              the file: a Windows-1252 export read as UTF-8 mangles every
+              accented name silently, and this is the only moment a human can
+              see that before 40,000 rows are written. Kept to the file's own
+              table metrics — header 45 tall on #f6f8fa, rows 28, cells 10/12. */}
+          <div className="w-full overflow-x-auto rounded border border-border bg-surface">
             <table className="min-w-full text-xs">
               <thead>
-                <tr className="border-b border-border bg-background">
+                <tr className="h-[45px] border-b border-border bg-background">
                   {staged.headers.map((header) => (
                     <th
                       key={header}
                       title={header}
-                      className="max-w-[16rem] truncate px-3 py-2 text-left font-medium text-heading"
+                      className="max-w-[16rem] truncate px-3 text-left text-sm font-normal text-heading"
                     >
                       {header}
                     </th>
@@ -278,12 +379,12 @@ export function StageUpload({
                 {staged.sample.slice(0, PREVIEW_ROWS).map((row, index) => (
                   // The row's position IS its identity here: two identical
                   // duplicate rows are exactly what an import file contains.
-                  <tr key={index} className="border-b border-border last:border-0">
+                  <tr key={index} className={index % 2 === 1 ? 'bg-background' : 'bg-surface'}>
                     {staged.headers.map((header) => (
                       <td
                         key={header}
                         title={row[header] ?? ''}
-                        className="max-w-[16rem] truncate px-3 py-2 text-body"
+                        className="h-7 max-w-[16rem] truncate px-3 text-sm text-body"
                       >
                         {row[header] ?? ''}
                       </td>
@@ -293,22 +394,24 @@ export function StageUpload({
               </tbody>
             </table>
           </div>
-        </div>
-      ) : recent.length > 0 ? (
-        <div className="rounded-lg border border-border bg-surface">
-          <h4 className="border-b border-border px-4 py-3 text-sm font-medium text-heading">
+        </>
+      )}
+
+      {staged === null && recent.length > 0 ? (
+        <div className="w-[627px] max-w-full rounded border border-border bg-surface">
+          <h4 className="border-b border-border px-3 py-[10px] text-[10px] font-medium leading-[15px] text-heading">
             Recent imports
           </h4>
           <ul>
             {recent.slice(0, 5).map((batch) => (
               <li
                 key={batch.id}
-                className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2 last:border-0"
+                className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-3 py-2 last:border-0"
               >
-                <span className="min-w-0 truncate text-sm text-heading" title={batch.filename}>
+                <span className="min-w-0 truncate text-[10px] text-heading" title={batch.filename}>
                   {batch.filename}
                 </span>
-                <span className="text-xs text-body">
+                <span className="text-[10px] text-body">
                   {batch.status.toLowerCase()} · {formatCount(batch.succeeded)} imported ·{' '}
                   {formatCount(batch.failed)} failed
                 </span>
@@ -327,7 +430,7 @@ export function StageUpload({
               apart: staging writes PENDING, and the worker only moves it to
               RUNNING when it claims the job. A wizard closed at stage 3 and a
               batch waiting in the queue look identical from here. */}
-          <p className="border-t border-border px-4 py-2 text-xs text-body">
+          <p className="border-t border-border px-3 py-2 text-[10px] leading-[15px] text-body">
             A batch still marked pending was either never submitted or is waiting for the worker to
             pick it up. Neither is doing anything to your records yet.
           </p>

@@ -65,3 +65,36 @@ export function relativeTime(iso: string, nowMs: number): string {
 function plural(n: number, unit: string): string {
   return `${n} ${unit}${n === 1 ? '' : 's'} ago`;
 }
+
+/*
+ * Day grouping follows the file's one rule: UTC on both sides. A local-time
+ * "Today" would be truer to the reader's morning, but the headers are
+ * server-rendered — grouping in each runtime's own timezone makes the server
+ * and the browser disagree about how many headers the list even has, which is
+ * a structural hydration failure, not a wording nit. `nowMs` follows the same
+ * seeding pattern as `relativeTime`. The workspace-timezone TODO above covers
+ * these two the day it lands.
+ */
+
+/** Same string ⇔ same UTC calendar day — the timeline's grouping key. */
+export function utcDayKey(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+}
+
+/** `Today` / `Yesterday` / `18 Aug 2026`, on the UTC calendar. */
+export function dayLabel(iso: string, nowMs: number): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return iso;
+  const days = Math.floor((utcMidnight(nowMs) - utcMidnight(then)) / DAY);
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  const d = new Date(then);
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()] ?? ''} ${d.getUTCFullYear()}`;
+}
+
+function utcMidnight(ms: number): number {
+  const d = new Date(ms);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}

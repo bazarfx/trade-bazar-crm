@@ -1,6 +1,6 @@
 'use client';
 
-import { Button } from '@/components/ui';
+import { Button, cn } from '@/components/ui';
 
 /**
  * The one segmented picker in the config builders — layout target, section
@@ -50,7 +50,18 @@ export function Segmented<T extends string | number>({
           disabled={disabled}
           onClick={() => onChange(option)}
           data-track={dataTrack}
-          className="rounded-none border-0"
+          className={cn(
+            'rounded-none border-0',
+            // The Button's measured Disable state (`Buttons` component,
+            // State=Disable) is a flat grey fill with a #d8d8d8 label — right
+            // for one control, wrong for a picker, where a read-only group
+            // (field-rules-overlay passes `disabled={readOnly}`) must still
+            // show WHICH option is chosen. `Button` already withholds that
+            // palette from an `aria-pressed` segment for exactly this reason,
+            // so the chosen one keeps its teal; dimming it is all that is left
+            // to say the group is inert.
+            option === value && 'disabled:opacity-60',
+          )}
         >
           {renderLabel ? renderLabel(option) : String(option)}
         </Button>

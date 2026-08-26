@@ -514,8 +514,19 @@ export default async function RecordDetailPage({
           label={mod.label}
           recordId={record.id}
           canEdit={canEdit}
-          systemColumns={Object.fromEntries(fields.map((f) => [f.key, f.systemColumn]))}
-          locked={locked}
+          // A user account gets the account form and a Reset password action.
+          // The same structural test as the Profile tabs: the storage shape,
+          // never the slug.
+          account={
+            storage.delegateName === 'user'
+              ? {
+                  canManage:
+                    principal.actor.isAdmin ||
+                    principal.permissions.specials.has('MANAGE_USERS_ROLES'),
+                  name: title,
+                }
+              : null
+          }
         />
       </div>
 

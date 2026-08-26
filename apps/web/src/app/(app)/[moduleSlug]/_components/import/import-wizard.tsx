@@ -56,15 +56,24 @@ import {
  */
 
 /**
- * The stage strip, verbatim from the file except for one word: it reads
- * "Fileld Mapping" there, alongside "peocessed" and "Brouse Files". A design
- * file's typo is not a specification.
+ * The stage strip, VERBATIM from the file — typo included.
+ *
+ * Re-read out of the twenty-four `CRM _ Leads_Import ` frames on 26 Aug 2026:
+ * every one of them draws the fourth chip as "Fileld Mapping", so the
+ * misspelling is the file's settled wording rather than one frame's slip. An
+ * earlier revision here "corrected" it to "Field Mapping"; the client has
+ * twice said the build does not match the file, and the file is the authority
+ * on its own labels.
+ *
+ * (The same frames also read "peocessed" and "Brouse Files" in body copy —
+ * those are still spelled correctly here, and it is worth the client deciding
+ * whether they want the file's spelling everywhere or ours everywhere.)
  */
 const STAGES = [
   'Upload',
   'Actions',
   'Module-File Mapping',
-  'Field Mapping',
+  'Fileld Mapping',
   'Assign',
 ] as const;
 
@@ -386,32 +395,105 @@ export function ImportWizard({
   const isLast = stage === ASSIGN;
 
   /**
-   * The panel's own title, measured at @296,176 (the panel's 24px inset) and
-   * Medium 18px #111827. The file gives stage 1 "Upload the Leads" and stage 2
-   * "How should the records in this field be peocessed" — the typo is the
-   * file's, alongside "Fileld Mapping" and "Brouse Files", and a design file's
-   * typo is not a specification. Stages 3–5 are titled from their stage name,
-   * which is what the file's own chips call them.
+   * WHICH STAGES SIT IN THE PANEL, and which sit on the page.
+   *
+   * The file is not uniform about this, and the difference is measured rather
+   * than chosen. Stages 1, 2 and 5 draw a `Pop up` frame — @272,152, 1152
+   * wide, `flex-col gap:24 pad:24`, `bg #ffffff`, `border #e5e7eb 1px`, `r:8`
+   * — at heights 289, 351, 386, 420, 497 and 516 across the family, so only
+   * its width is fixed.
+   *
+   * EVERY stage sits on the panel — including 3 and 4, which was misread once
+   * and is worth stating so it is not misread again. Those two frames carry no
+   * `Pop up` AUTO-LAYOUT node, so a search by that name finds nothing; the
+   * panel is there as a plain `Rectangle 25` @272,152, 1152x544, `#ffffff`,
+   * 1px `#e5e7eb`, `r:8` — present in 8 of the 28 Import frames, which are
+   * exactly the stage-3 and stage-4 states. What actually differs on those two
+   * is the CONTENT: no title row, and a two-column body (a 161-wide rail at
+   * x=284 and a 967-wide column at x=457) rather than one flowing column.
    */
-  const PANEL_TITLES: readonly string[] = [
-    `Upload the ${labelPlural}`,
-    'How should the records in this field be processed',
-    'Module-File Mapping',
-    'Field Mapping',
-    'Assignment Rules',
-  ];
+  const inPanel = true;
+  /** Stages 3 and 4 lay their panel out in two columns and draw no title. */
+  const twoColumn = stage === MODULE_FILE || stage === FIELD_MAPPING;
+
+  /**
+   * The panel's own title, measured at @296,176 (the panel's 24px inset) and
+   * Medium 18px #111827. Only the three panel stages carry one — stages 3 and
+   * 4 have no title row, and stage 4's own "Leads" heading belongs to its
+   * right-hand column rather than to a panel.
+   *
+   * The file writes stage 2's as "How should the records in this field be
+   * peocessed"; the misspelling is not carried into body copy the way the
+   * stage chip's is (see STAGES above).
+   */
+  const PANEL_TITLES: Record<number, string | undefined> = {
+    [UPLOAD]: `Upload the ${labelPlural}`,
+    [ACTIONS]: 'How should the records in this field be processed',
+    // Stage 5 has NO panel title row: frame [25] draws its first section as
+    // `Frame 2121453962` — a `Title` ("Assignment Rules", the same Medium 18px)
+    // with its own control 12px under it, and only THEN a separator. Lifting
+    // that heading into the panel's own title slot would put the separator
+    // between a heading and the row it introduces.
+    [ASSIGN]: undefined,
+  };
+  const panelTitle = PANEL_TITLES[stage];
+
+  /**
+   * `Frame 482702` 1104x40, flex-row gap:18 — three 222x40 buttons
+   * right-aligned, in the file's own order: Cancel, then Previous, then Next.
+   * `PopupFooter` owns every one of those numbers, so this screen states none.
+   */
+  const footer = (
+    <PopupFooter
+      trackPrefix={trackPrefix}
+      cancel={{ label: 'Cancel', onClick: leave }}
+      previous={{
+        label: 'Previous',
+        onClick: () => goTo(stage - 1),
+        disabled: stage === UPLOAD || busy,
+      }}
+      next={{
+        label: isLast ? `Import ${labelPlural}` : 'Next',
+        onClick: () => void goNext(),
+        disabled: busy || blockerFor(stage) !== null,
+      }}
+    />
+  );
+
+  /** Errors and notices, drawn wherever the stage's own chrome puts them. */
+  const alerts = (
+    <>
+      {error !== null ? (
+        <p
+          role="alert"
+          className="rounded border border-error bg-surface px-4 py-3 text-sm text-heading"
+        >
+          {error}
+        </p>
+      ) : null}
+      {notice !== null ? (
+        <p role="status" className="text-xs text-body">
+          {notice}
+        </p>
+      ) : null}
+    </>
+  );
 
   return (
     // THE PAGE, not an overlay. The shell's sidebar and top bar stay put; this
-    // is only what sits under them. `-m-4` cancels `main`'s 16px inset for the
-    // toolbar strip and panel, which the file positions against the CONTENT
-    // COLUMN's edge (x=272 of 1440 = 256 + 16) rather than against a page
-    // gutter — then each child re-applies the 16 itself.
+    // is only what sits under them. Everything below is laid out against the
+    // CONTENT COLUMN's edge — x=272 of 1440 = 256 + 16 — which is `main`'s own
+    // padding, so nothing here needs an offset of its own.
     <div className="flex flex-col">
-      {/* `Rectangle 5` — @272,84 1152x56, #ffffff, r:12. y=84 is 16 below the
-          top bar's 68, which is `main`'s own padding, so this needs no offset
-          of its own. It is the positioning context for the chips. */}
-      <div className="h-[56px] w-[1152px] max-w-full rounded-xl bg-surface">
+      {/* `Rectangle 5` — @272,84 1152x56, `#ffffff`, `border #e5e7eb 1px`,
+          `r:8`. The border is a spread-only shadow rather than a CSS border
+          for the reason `popup.tsx` documents: a border sits inside `width`
+          under border-box and would push every absolutely-positioned chip 1px
+          off its measured x. */}
+      <div
+        className="h-[56px] w-[1152px] max-w-full rounded-md bg-surface"
+        style={{ boxShadow: '0 0 0 1px var(--border)' }}
+      >
         <StageStrip
           stages={STAGES}
           current={run === null ? stage : ASSIGN}
@@ -422,13 +504,13 @@ export function ImportWizard({
         />
       </div>
 
-      {/* The CONTENT PANEL — `Pop up` @272,152, 1152 wide, #ffffff, r:12,
-          flex-col gap:24 pad:24. Its HEIGHT is content-driven: the file draws
-          this same frame at 289, 351, 386, 420, 497, 510 and 516 across the
-          twenty-four import frames, so only the width is fixed. y=152 is
-          84 + 56 (the toolbar) + 12. */}
-      <div className="mt-3 flex w-[1152px] max-w-full flex-col gap-6 rounded-xl bg-surface p-6">
-        {run !== null ? (
+      {run !== null ? (
+        /* The progress view keeps the panel: it is one column of content with
+           a title, which is the shape the panel exists for. */
+        <div
+          className="mt-3 flex w-[1152px] max-w-full flex-col gap-6 rounded-md bg-surface p-6"
+          style={{ boxShadow: '0 0 0 1px var(--border)' }}
+        >
           <ImportRun
             slug={slug}
             labelPlural={labelPlural}
@@ -445,131 +527,143 @@ export function ImportWizard({
             onImported={() => router.refresh()}
             trackPrefix={trackPrefix}
           />
-        ) : (
-          <>
-            {/* Title 1104x22 (the panel's 1152 less its 24 padding each side),
-                Medium 18px #111827 — the same row the 511 pop-ups draw. */}
-            <h2 className="truncate text-lg font-medium text-heading">
-              {PANEL_TITLES[stage]}
-            </h2>
-            {/* Separator @296,222 — 1px #e5e7eb across the inner 1104. */}
-            <div className="h-px shrink-0 bg-border" aria-hidden="true" />
+        </div>
+      ) : inPanel && !twoColumn ? (
+        /* The CONTENT PANEL — `Pop up` @272,152, 1152 wide, `#ffffff`, `r:8`,
+           `flex-col gap:24 pad:24`. Its HEIGHT is content-driven; only the
+           width is fixed. y=152 is 84 + 56 (the toolbar) + 12. */
+        <div
+          className="mt-3 flex w-[1152px] max-w-full flex-col gap-6 rounded-md bg-surface p-6"
+          style={{ boxShadow: '0 0 0 1px var(--border)' }}
+        >
+          {/* Title 1104x22 (the panel's 1152 less its 24 padding each side),
+              Medium 18px #111827 — the same row the 511 pop-ups draw. 18px is
+              not on the type scale, so it is stated inline with the node
+              named, exactly as `popup.tsx` states it. */}
+          {panelTitle !== undefined ? (
+            <>
+              <h2 className="truncate text-[18px] font-medium leading-[22px] text-heading">
+                {panelTitle}
+              </h2>
+              {/* Separator @296,222 — 1px #e5e7eb across the inner 1104. */}
+              <div className="h-px shrink-0 bg-border" aria-hidden="true" />
+            </>
+          ) : null}
 
-            {/* Content — flex-col gap:20. */}
-            <div className="flex flex-col gap-5">
-              <div>
-                {error !== null ? (
-                  <p
-                    role="alert"
-                    className="mb-6 rounded border border-error bg-surface px-4 py-3 text-sm text-heading"
-                  >
-                    {error}
-                  </p>
-                ) : null}
-                {notice !== null ? (
-                  <p role="status" className="mb-6 text-xs text-body">
-                    {notice}
-                  </p>
-                ) : null}
+          {/* Content — flex-col gap:20. */}
+          <div className="flex flex-col gap-5">
+            {alerts}
 
-                {stage === UPLOAD ? (
-                  <StageUpload
-                    slug={slug}
-                    labelPlural={labelPlural}
-                    charset={charset}
-                    onCharset={setCharset}
-                    staged={staged}
-                    file={file}
-                    uploading={uploading}
-                    onFile={(picked) => void upload(picked)}
-                    onReread={() => {
-                      if (file !== null) void upload(file, false);
-                    }}
-                    onResume={(batch) => setRun(batch)}
-                    trackPrefix={trackPrefix}
-                  />
-                ) : null}
+            {stage === UPLOAD ? (
+              <StageUpload
+                slug={slug}
+                labelPlural={labelPlural}
+                charset={charset}
+                onCharset={setCharset}
+                staged={staged}
+                file={file}
+                uploading={uploading}
+                onFile={(picked) => void upload(picked)}
+                onReread={() => {
+                  if (file !== null) void upload(file, false);
+                }}
+                onResume={(batch) => setRun(batch)}
+                trackPrefix={trackPrefix}
+              />
+            ) : null}
 
-                {stage === ACTIONS ? (
-                  <StageActions
-                    labelPlural={labelPlural}
-                    action={action}
-                    onAction={setAction}
-                    dedupeKey={dedupeKey}
-                    onDedupeKey={setDedupeKey}
-                    catalogue={catalogue}
-                    catalogueLoading={fieldsLoading}
-                    trackPrefix={trackPrefix}
-                  />
-                ) : null}
+            {stage === ACTIONS ? (
+              <StageActions
+                labelPlural={labelPlural}
+                action={action}
+                onAction={setAction}
+                dedupeKey={dedupeKey}
+                onDedupeKey={setDedupeKey}
+                catalogue={catalogue}
+                catalogueLoading={fieldsLoading}
+                trackPrefix={trackPrefix}
+              />
+            ) : null}
 
-                {stage === MODULE_FILE && staged !== null ? (
-                  <StageModuleFile
-                    labelPlural={labelPlural}
-                    staged={staged}
-                    trackPrefix={trackPrefix}
-                  />
-                ) : null}
-
-                {stage === FIELD_MAPPING && staged !== null ? (
-                  <StageFieldMapping
-                    slug={slug}
-                    labelPlural={labelPlural}
-                    staged={staged}
-                    catalogue={catalogue}
-                    mapping={mapping}
-                    onMapping={setMapping}
-                    dedupeKey={dedupeKey}
-                    systemColumns={systemColumns}
-                    fieldsLoading={fieldsLoading}
-                    trackPrefix={trackPrefix}
-                  />
-                ) : null}
-
-                {stage === ASSIGN ? (
-                  <StageAssign
-                    labelPlural={labelPlural}
-                    assignment={assignment}
-                    onAssignment={setAssignment}
-                    hasOwner={hasOwner}
-                    trackPrefix={trackPrefix}
-                  />
-                ) : null}
-              </div>
-            </div>
+            {stage === ASSIGN ? (
+              <StageAssign
+                labelPlural={labelPlural}
+                assignment={assignment}
+                onAssignment={setAssignment}
+                hasOwner={hasOwner}
+                trackPrefix={trackPrefix}
+              />
+            ) : null}
 
             <p className="text-xs text-body">
               {isLast
                 ? 'Nothing is written until you press Import. From then on the work runs in the background.'
                 : `Stage ${stage + 1} of ${STAGES.length} · nothing has been written yet.`}
             </p>
+          </div>
 
-            {/* Separator @296,573 — the 1152 panel draws a SECOND rule above
-                its footer, which the 511 pop-ups do not. See the
-                FOOTER_SEPARATOR table in components/ui/popup.tsx. */}
-            <div className="h-px shrink-0 bg-border" aria-hidden="true" />
+          {/* Separator @296,573 — the 1152 panel draws a SECOND rule above its
+              footer, which the 511 pop-ups do not. See the FOOTER_SEPARATOR
+              table in components/ui/popup.tsx. */}
+          <div className="h-px shrink-0 bg-border" aria-hidden="true" />
+          {footer}
+        </div>
+      ) : null}
 
-            {/* `Frame 482702` 1104x40, flex-row gap:18 — three 222x40 buttons
-                right-aligned at x = 402, 642, 882 within 1104, in the file's
-                own order: Cancel, then Previous, then Next. `PopupFooter` owns
-                every one of those numbers, so this screen states none of them. */}
-            <PopupFooter
+      {/* Stages 3 and 4 — the SAME `Rectangle 25` panel (1152x544, white, 1px
+          #e5e7eb, r:8), laid out in two columns and carrying no title row.
+          Each stage draws its own separator above the footer across the RIGHT
+          column only (@457,608, 967 wide), which is why the footer travels
+          into the stage rather than being drawn here.
+
+          ITS INSETS ARE NOT THE 24 THE ONE-COLUMN STAGES USE. Re-measured
+          26 Aug 2026 against `Rectangle 25` @272,152 (so 272…1424 across and
+          152…696 down), every child of these two frames places itself:
+
+            rail          x=284          → 12 from the panel's left edge
+            right column  x=457…1424     → 12 after the 161 rail, and FLUSH to
+                                           the panel's right edge, no inset
+            first row     y=164          → 12 from the panel's top edge
+            footer        y=632…672      → 24 above the panel's bottom edge
+
+          So the panel is `pad 12 / 0 / 24 / 12`, and the right column reaches
+          its measured 967 by bleeding back over the 12 of right padding that
+          keeps the alert banners off the edge. `p-6` here made every one of
+          those numbers 24, which pushed the rail 12px right and cut the table
+          to 955. */}
+      {twoColumn ? (
+        <div
+          className="mt-3 flex w-[1152px] max-w-full flex-col rounded-md bg-surface px-3 pb-6 pt-3"
+          style={{ boxShadow: '0 0 0 1px var(--border)' }}
+        >
+          {stage === MODULE_FILE && staged !== null ? (
+            <StageModuleFile
+              labelPlural={labelPlural}
+              staged={staged}
+              alerts={alerts}
+              footer={footer}
               trackPrefix={trackPrefix}
-              cancel={{ label: 'Cancel', onClick: leave }}
-              previous={{
-                label: 'Previous',
-                onClick: () => goTo(stage - 1),
-                disabled: stage === UPLOAD || busy,
-              }}
-              next={{
-                label: isLast ? `Import ${labelPlural}` : 'Next',
-                onClick: () => void goNext(),
-                disabled: busy || blockerFor(stage) !== null,
-              }}
             />
-          </>
-        )}
-      </div>
+          ) : null}
+
+          {stage === FIELD_MAPPING && staged !== null ? (
+            <StageFieldMapping
+              slug={slug}
+              labelPlural={labelPlural}
+              staged={staged}
+              catalogue={catalogue}
+              mapping={mapping}
+              onMapping={setMapping}
+              dedupeKey={dedupeKey}
+              systemColumns={systemColumns}
+              fieldsLoading={fieldsLoading}
+              alerts={alerts}
+              footer={footer}
+              trackPrefix={trackPrefix}
+            />
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

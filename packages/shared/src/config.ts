@@ -146,7 +146,10 @@ export type FieldUpdateInput = z.infer<typeof fieldUpdateSchema>;
 // ── section payloads ──────────────────────────────────────────────────────
 export const sectionCreateSchema = z.object({
   label: z.string().trim().min(1).max(100),
-  columns: z.number().int().min(1).max(3).default(3),
+  /** 1-4. Four is what `CRM _ Leads_Create Leads` draws: 273-wide fields at a
+   *  12px gap across the 1128 content width. The cap was 3 before that frame
+   *  was measured, which made the designed grid unreachable from the UI. */
+  columns: z.number().int().min(1).max(4).default(4),
   isCollapsible: z.boolean().default(false),
 });
 export const sectionUpdateSchema = sectionCreateSchema.partial().strict();
@@ -184,7 +187,7 @@ export type LayoutTargetValue = (typeof LAYOUT_TARGETS)[number];
 export const layoutFieldRefSchema = z.object({
   fieldId: z.string().uuid(),
   /** grid columns this field spans inside its section (section grid is 1-3) */
-  colSpan: z.number().int().min(1).max(3).optional(),
+  colSpan: z.number().int().min(1).max(4).optional(),
 });
 export const layoutSectionRefSchema = z.object({
   sectionId: z.string().uuid(),

@@ -125,7 +125,7 @@ export function AnalyticsPanel({ slug, recordId, className }: AnalyticsPanelProp
       />
       <PanelBody>
         {error !== null ? (
-          <p role="alert" className="rounded bg-error/10 px-3 py-2 text-xs text-error">
+          <p role="alert" className="rounded bg-[var(--globalcolors-red-10)] px-3 py-2 text-xs text-error">
             {error}
           </p>
         ) : data === null ? (

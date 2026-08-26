@@ -9,7 +9,7 @@ export { Button, buttonClass, cn } from './button';
 export type { ButtonProps, ButtonSize, ButtonVariant } from './button';
 
 export { Checkbox, FieldError, FieldLabel, Input, Select, Textarea } from './input';
-export type { CheckboxProps, FieldLabelProps, InputProps, SelectProps, TextareaProps } from './input';
+export type { CheckboxProps, FieldLabelProps, FieldTone, InputProps, SelectProps, TextareaProps } from './input';
 
 export { Chip, StatusChip, toneForTag } from './chip';
 export type { ChipProps, ChipTone, StatusChipProps } from './chip';

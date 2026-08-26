@@ -1,28 +1,46 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { ImportAssignment, SettingValues } from '@crm/shared';
 import { api } from '@/lib/client-api';
-import { Button, FieldLabel, Select, cn } from '@/components/ui';
+import { cn } from '@/components/ui';
+import { ChevronDownIcon } from '../icons';
+import { TickIcon } from './icons';
 import { assignable, useDirectory, userLabel } from '../directory';
 
 /**
  * Stage 5 — Assign.
  *
- * The file says "Assign Owner based on Assignment Rules" and offers a picker
- * of rules. There is no rule BUILDER in this product — assignment is the
- * four-tier engine in `packages/records/src/assignment`, aimed by two
- * Admin-nominated pointers — so this stage shows what those pointers actually
- * are instead of an empty rule list dressed up as a configured one.
+ * MEASURED off frames [23] to [27], whose `Pop up` is 1152x516 and whose
+ * SECTIONS are the shape of the stage:
+ *
+ *   `Frame 2121453962`  flex-col gap:12
+ *     `Title`   1104x22, Medium 18px `#111827` — "Assignment Rules"
+ *     row 28    a 22x22 `tICK` (`bg #00667a`, `r:4`, a white `charm:tick` 14),
+ *               gap 12, the label at Regular 14px `#111827`, and a 203x28
+ *               select flush right (`#ffffff`, `#e5e7eb`, `r:4`, Regular 10px)
+ *   `Separator` 1104x1, then the next section, at the panel's own gap 24
+ *
+ * That is why this stage has no panel title of its own — its first section
+ * heading IS the title, with its control 12px under it and the separator only
+ * after both.
+ *
+ * WHAT IS AND IS NOT BUILT. There is no rule BUILDER in this product —
+ * assignment is the four-tier engine in `packages/records/src/assignment`,
+ * aimed by two Admin-nominated pointers — so the file's "Choose Assignment
+ * Rules" picker has nothing to choose between and is not drawn. The second
+ * choice takes the select slot instead, because picking the one owner is a
+ * real choice with a real list behind it.
  *
  * Two choices, and there can never be a third: invariant 1 says a record is
  * never unassigned, so "leave the owner blank" is not on offer. Either the
  * rules decide (each row routed exactly as a manually created record is, with
  * its own ASSIGNED audit row) or every row goes to one named person.
  *
- * The file's other three toggles — Manual Record Approval, Trigger Automation,
- * Assign Follow-up Tasks — are Zoho features with no engine behind them here.
- * A switch that silently does nothing is worse than an absent one.
+ * The file's other three sections — Manual Record Approval, Trigger Automation
+ * and process Management, Assign Follow-up Tasks — are Zoho features with no
+ * engine behind them here. A switch that silently does nothing is worse than
+ * an absent one, so the sections are omitted rather than drawn inert.
  */
 
 export interface StageAssignProps {
@@ -40,6 +58,33 @@ type RulesView =
    *  a 403, which is a legitimate answer and not an error to shout about */
   | { state: 'hidden' }
   | { state: 'ready'; seniorRoleName: string | null; hasSeniorRole: boolean; hasPool: boolean };
+
+/** `tICK` / `Checkbox` — 22x22, `r:4`. Unticked is a 20x20 `#ffffff` box with
+ *  a `#e5e7eb` stroke; ticked is `#00667a` filled with a white 14px tick. A
+ *  real radio underneath, so arrow-key selection and the group name behave
+ *  exactly as they did — only the box the file draws is square. */
+const CHOICE_BOX =
+  'peer h-[22px] w-[22px] shrink-0 appearance-none rounded border border-border bg-surface ' +
+  'checked:border-primary checked:bg-primary ' +
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ' +
+  'focus-visible:ring-offset-2 focus-visible:ring-offset-surface';
+
+/** `Frame 2121453966` — 203x28, pad 6/10, value Regular 10px `#6b7280`. */
+const RULE_SELECT =
+  'h-7 w-[203px] appearance-none rounded border border-border bg-surface pl-[10px] pr-8 ' +
+  'text-[10px] text-body focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary ' +
+  'disabled:cursor-not-allowed disabled:opacity-60';
+
+/** `Title` + its content, at the file's gap 12. Every section in the frame is
+ *  this shape, which is why it is one component rather than five copies. */
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <h3 className="text-[18px] font-medium leading-[22px] text-heading">{title}</h3>
+      {children}
+    </div>
+  );
+}
 
 export function StageAssign({
   labelPlural,
@@ -98,130 +143,125 @@ export function StageAssign({
 
   if (!hasOwner) {
     return (
-      <div className="flex flex-col gap-4">
-        <h3 className="text-lg font-medium text-heading">Assign</h3>
-        <p className="text-sm text-body">
+      <Section title="Assignment Rules">
+        <p className="text-sm leading-[21px] text-body">
           Records in {labelPlural} do not carry an owner, so there is nothing to assign and no
           routing to choose. Every row still lands with its full audit trail — it simply has no
           owner column for the assignment engine to fill.
         </p>
-      </div>
+      </Section>
     );
   }
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h3 className="text-lg font-medium text-heading">Assignment Rules</h3>
-        <p className="mt-1 text-sm text-body">
-          Nothing imported is ever left unassigned. Every row gets an owner as it is created, and
-          the assignment is written to that record’s own timeline with the reason it was made.
-        </p>
-      </div>
+      <Section title="Assignment Rules">
+        <fieldset className="flex flex-col gap-3">
+          <legend className="sr-only">Who owns the imported records</legend>
 
-      <fieldset className="flex flex-col gap-3">
-        <legend className="sr-only">Who owns the imported records</legend>
-
-        <label
-          className={cn(
-            'flex cursor-pointer gap-3 rounded-lg border bg-surface px-4 py-3',
-            assignment.mode === 'RULES' ? 'border-primary' : 'border-border',
-          )}
-        >
-          <input
-            type="radio"
-            name="import-assignment"
-            checked={assignment.mode === 'RULES'}
-            onChange={() => onAssignment({ mode: 'RULES' })}
-            className="mt-1 h-4 w-4 shrink-0 accent-primary"
-            data-track={`${trackPrefix}.assign.select`}
-          />
-          <span>
-            <span className="block text-sm font-medium text-heading">
+          {/* `Frame 2121453961` — 28 tall, box then a 12px gap then the label. */}
+          <label className="flex cursor-pointer items-center gap-3">
+            <span className="relative flex items-center">
+              <input
+                type="radio"
+                name="import-assignment"
+                checked={assignment.mode === 'RULES'}
+                onChange={() => onAssignment({ mode: 'RULES' })}
+                className={CHOICE_BOX}
+                data-track={`${trackPrefix}.assign.select`}
+              />
+              <TickIcon
+                aria-hidden="true"
+                className="pointer-events-none absolute left-1 hidden h-[14px] w-[14px] text-surface peer-checked:block"
+              />
+            </span>
+            <span className="text-sm leading-[21px] text-heading">
               Assign Owner based on Assignment Rules
             </span>
-            <span className="mt-1 block text-xs text-body">
-              Each row runs through the same engine a record created by hand does — so an imported
-              record is routed exactly like one typed into the form.
-            </span>
-          </span>
-        </label>
+          </label>
 
-        <label
-          className={cn(
-            'flex cursor-pointer gap-3 rounded-lg border bg-surface px-4 py-3',
-            assignment.mode === 'OWNER' ? 'border-primary' : 'border-border',
-          )}
-        >
-          <input
-            type="radio"
-            name="import-assignment"
-            checked={assignment.mode === 'OWNER'}
-            // Radio semantics need a value the moment it is selected, and the
-            // commit schema demands a uuid — so the mode carries the empty
-            // choice and Next stays blocked until somebody is picked.
-            onChange={() => onAssignment({ mode: 'OWNER', ownerId })}
-            className="mt-1 h-4 w-4 shrink-0 accent-primary"
-            data-track={`${trackPrefix}.assign.select`}
-          />
-          <span className="min-w-0 flex-1">
-            <span className="block text-sm font-medium text-heading">
-              Assign every imported record to one user
-            </span>
-            <span className="mt-1 block text-xs text-body">
-              The whole file lands with one person, recorded on each record as a manual assignment.
-              This needs the Reassign permission; without it the import is refused rather than
-              quietly routed by the rules instead.
-            </span>
-
-            {assignment.mode === 'OWNER' ? (
-              <span className="mt-3 block max-w-md">
-                <FieldLabel htmlFor="import-owner" required>
-                  Owner
-                </FieldLabel>
-                <Select
-                  id="import-owner"
-                  value={ownerId}
-                  disabled={directory.loading || candidates.length === 0}
-                  onChange={(e) => onAssignment({ mode: 'OWNER', ownerId: e.target.value })}
-                  data-track={`${trackPrefix}.assign.owner.select`}
-                >
-                  <option value="">
-                    {directory.loading ? 'Loading people…' : 'Choose a user…'}
-                  </option>
-                  {candidates.map((user) => (
-                    <option key={user.id} value={user.id}>
-                      {userLabel(user)}
-                    </option>
-                  ))}
-                </Select>
-                {!directory.loading && candidates.length === 0 ? (
-                  <span className="mt-1 block text-xs text-body">
-                    There is nobody here to choose — either your role cannot see the people in this
-                    workspace, or every account is deactivated. A deactivated user keeps the records
-                    they own but never receives new ones.
-                  </span>
-                ) : null}
+          {/* The select is a SIBLING of the label, not inside it: a control
+              nested in a label for another control forwards its clicks to that
+              control, which would re-select the radio every time the dropdown
+              was opened. */}
+          <div className="flex items-center gap-3">
+            <label className="flex cursor-pointer items-center gap-3">
+              <span className="relative flex items-center">
+                <input
+                  type="radio"
+                  name="import-assignment"
+                  checked={assignment.mode === 'OWNER'}
+                  // Radio semantics need a value the moment it is selected, and
+                  // the commit schema demands a uuid — so the mode carries the
+                  // empty choice and Next stays blocked until somebody is picked.
+                  onChange={() => onAssignment({ mode: 'OWNER', ownerId })}
+                  className={CHOICE_BOX}
+                  data-track={`${trackPrefix}.assign.select`}
+                />
+                <TickIcon
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-1 hidden h-[14px] w-[14px] text-surface peer-checked:block"
+                />
               </span>
-            ) : null}
-          </span>
-        </label>
-      </fieldset>
+              <span className="text-sm leading-[21px] text-heading">
+                Assign every imported record to one user
+              </span>
+            </label>
+            {/* The file's 203x28 select, in the slot its "Choose Assignment
+                Rules" picker occupies. */}
+            <span className="relative shrink-0">
+              <select
+                aria-label="Owner for every imported record"
+                value={ownerId}
+                disabled={
+                  assignment.mode !== 'OWNER' || directory.loading || candidates.length === 0
+                }
+                onChange={(e) => onAssignment({ mode: 'OWNER', ownerId: e.target.value })}
+                className={RULE_SELECT}
+                data-track={`${trackPrefix}.assign.owner.select`}
+              >
+                <option value="">{directory.loading ? 'Loading people…' : 'Choose a user'}</option>
+                {candidates.map((user) => (
+                  <option key={user.id} value={user.id}>
+                    {userLabel(user)}
+                  </option>
+                ))}
+              </select>
+              <ChevronDownIcon className="pointer-events-none absolute right-[10px] top-1/2 h-4 w-4 -translate-y-1/2 text-body" />
+            </span>
+          </div>
 
-      <div className="rounded-lg border border-border bg-surface px-4 py-3">
-        <h4 className="text-xs font-medium text-heading">What the rules are, right now</h4>
+          <p className="text-[10px] leading-[15px] text-body">
+            {assignment.mode === 'RULES'
+              ? 'Each row runs through the same engine a record created by hand does — so an imported record is routed exactly like one typed into the form.'
+              : 'The whole file lands with one person, recorded on each record as a manual assignment. This needs the Reassign permission; without it the import is refused rather than quietly routed by the rules instead.'}
+          </p>
 
+          {!directory.loading && candidates.length === 0 ? (
+            <p className="text-[10px] leading-[15px] text-body">
+              There is nobody here to choose — either your role cannot see the people in this
+              workspace, or every account is deactivated. A deactivated user keeps the records they
+              own but never receives new ones.
+            </p>
+          ) : null}
+        </fieldset>
+      </Section>
+
+      {/* `Separator` 1104x1 — the rule between two of the file's sections. */}
+      <div className="h-px shrink-0 bg-border" aria-hidden="true" />
+
+      <Section title="What the rules are, right now">
         {rules.state === 'loading' ? (
-          <p className="mt-2 text-xs text-body">Reading the routing configuration…</p>
+          <p className="text-sm leading-[21px] text-body">Reading the routing configuration…</p>
         ) : rules.state === 'hidden' ? (
-          <p className="mt-2 text-xs text-body">
+          <p className="text-sm leading-[21px] text-body">
             The routing configuration is Admin-only, so it cannot be shown here. What it decides is
             fixed either way: a record goes to the group matching its language, an ARK-stamped
             record to the seniors of that language, then to the default pool, and finally to the
             Admin. There is no tier after that and no record is left without an owner.
           </p>
         ) : (
-          <ol className="mt-2 flex list-decimal flex-col gap-1 pl-4 text-xs text-body">
+          <ol className="flex list-decimal flex-col gap-1 pl-4 text-sm leading-[21px] text-body">
             <li>
               The group whose language matches the record’s, round-robin among its active members.
             </li>
@@ -254,7 +294,7 @@ export function StageAssign({
         )}
 
         {rules.state === 'ready' && !rules.hasSeniorRole && !rules.hasPool ? (
-          <p className="mt-2 text-xs text-heading">
+          <p className={cn('text-[10px] leading-[15px] text-heading')}>
             Neither pointer is nominated yet, so every row whose language matches no group will land
             with the Admin. That is a working import, not a broken one — but if this file is large,
             nominate the pools on Settings → Assignment first.
@@ -262,17 +302,16 @@ export function StageAssign({
         ) : null}
 
         {rules.state === 'ready' ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="mt-2 px-0"
+          <button
+            type="button"
             onClick={() => window.open('/settings/assignment', '_blank', 'noopener')}
+            className="self-start text-[10px] font-medium leading-[15px] text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
             data-track={`${trackPrefix}.assign.settings.open`}
           >
             Open Settings → Assignment
-          </Button>
+          </button>
         ) : null}
-      </div>
+      </Section>
     </div>
   );
 }

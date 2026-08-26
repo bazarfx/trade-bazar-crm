@@ -20,11 +20,13 @@ import { draftsFrom } from './filter-model';
 import { useSpecials } from './specials';
 import {
   buildListHref,
-  encodeFilterHash,
+  encodeListHash,
   readFilterHash,
+  readSystemHash,
   NO_VIEW,
   type ListQuery,
   type ListQueryLimits,
+  type SystemSelection,
 } from './list-query';
 import { ListToolbar } from './list-toolbar';
 import { Pagination } from './pagination';
@@ -111,8 +113,17 @@ export interface ListScreenProps {
   duplicateCount: number;
 }
 
+/**
+ * The ad-hoc filter in effect: the rail's field conditions, the rail's ticked
+ * System Defined Filters, or both. They are ANDed by the server, and they are
+ * held together here so neither can be applied, navigated or cleared without
+ * the other.
+ */
 interface AppliedFilter {
-  node: FilterNode;
+  /** null when the filter is system rows only */
+  node: FilterNode | null;
+  /** `[{ id, value? }]`, exactly as `records/query` takes it */
+  system: SystemSelection[];
   /** the encoded fragment — a stable primitive to key effects and state off */
   key: string;
 }
@@ -160,11 +171,16 @@ export function ListScreen({
   const [deleting, setDeleting] = useState<RailView | null>(null);
   const [focusToken, setFocusToken] = useState(0);
   /**
-   * Which field the rail should open on when `focusToken` next changes. The
-   * toolbar's Filter button focuses the group as a whole (null); a column
-   * header's `oui:filter` funnel names its own field, so the rail can tick
-   * that row and land the caret in its value input. Kept beside the token
-   * rather than inside it so a re-focus of the same field still fires.
+   * Which field the rail should open on when `focusToken` next changes. A
+   * column header's `oui:filter` funnel names its own field, so the rail can
+   * tick that row and land the caret in its value input; null means the group
+   * as a whole. Kept beside the token rather than inside it so a re-focus of
+   * the same field still fires.
+   *
+   * The funnels are the only callers now — the toolbar's duplicate Filter
+   * button, which passed null, is gone (see `list-toolbar.tsx`: the file draws
+   * Filter once per screen and on our banded layout that one is the band's
+   * `Frame 482685`, rendered by `filter-toggle.tsx`).
    */
   const [focusField, setFocusField] = useState<string | null>(null);
 
@@ -207,7 +223,8 @@ export function ListScreen({
     }
     try {
       const node = readFilterHash(window.location.hash);
-      if (node === null) {
+      const system = readSystemHash(window.location.hash);
+      if (node === null && system.length === 0) {
         // The link says it is filtered and carries no filter — usually a URL
         // copied without its fragment. Showing the unfiltered list would show
         // MORE records than the filter it claims to have, so it shows none and
@@ -218,7 +235,7 @@ export function ListScreen({
         );
         return;
       }
-      setFilter({ node, key: encodeFilterHash(node) });
+      setFilter({ node, system, key: encodeListHash(node, system) });
       setFilterError(null);
     } catch (err) {
       setFilter(null);
@@ -256,7 +273,14 @@ export function ListScreen({
     api<{ records: TableRow[]; total: number }>(`/api/modules/${slug}/records/query`, {
       method: 'POST',
       body: JSON.stringify({
-        filters: filter.node,
+        // Both halves, each omitted when empty rather than sent as null: the
+        // envelope's `filters` is nullish and `system` is optional, and an
+        // absent key is the one encoding of "no conditions of this kind" that
+        // cannot be mistaken for a condition. The server ANDs whichever
+        // arrive, and rejects a system id it cannot answer with a 400 that
+        // names it — which lands in the catch below and is SHOWN.
+        ...(filter.node === null ? {} : { filters: filter.node }),
+        ...(filter.system.length === 0 ? {} : { system: filter.system }),
         ...(query.sort === null ? {} : { sort: [query.sort] }),
         ...(query.search === null ? {} : { search: query.search }),
         page: query.page,
@@ -386,8 +410,16 @@ export function ListScreen({
    * opens pre-loaded from the view, and Apply supersedes it without touching
    * the stored view.
    */
-  const railTree = filter?.node ?? (clientOwned ? null : (appliedView?.filters ?? null));
+  // Written as an explicit branch rather than `filter?.node ?? …`: a
+  // system-only filter has a null `node` on a non-null `filter`, and `??`
+  // cannot tell that apart from having no filter at all — it would fall
+  // through to the saved view's tree and draw conditions nobody applied.
+  const railTree =
+    filter !== null ? filter.node : clientOwned ? null : (appliedView?.filters ?? null);
   const rail = useMemo(() => draftsFrom(railTree), [railTree]);
+
+  /** The ticked System Defined Filters the rail should open on. */
+  const railSystem = useMemo<SystemSelection[]>(() => filter?.system ?? [], [filter]);
 
   /**
    * What the rail cannot faithfully re-emit.
@@ -454,15 +486,18 @@ export function ListScreen({
     [router, href, hash],
   );
 
-  function applyFilter(tree: FilterNode | null) {
-    if (tree === null) {
+  function applyFilter(tree: FilterNode | null, system: SystemSelection[]) {
+    // Empty on BOTH counts is a clear. A system-only filter is a filter: the
+    // rail can tick "Untouched Records" and nothing else, and that has to
+    // reach the server rather than falling through to the unfiltered list.
+    if (tree === null && system.length === 0) {
       clearFilter();
       return;
     }
-    const next = encodeFilterHash(tree);
+    const next = encodeListHash(tree, system);
     // Set first, navigate second: a hash-only pushState fires no event, so the
     // handler is the only thing that can tell this component what it just did.
-    setFilter({ node: tree, key: next });
+    setFilter({ node: tree, system, key: next });
     setFilterError(null);
     router.push(`${href({ filtered: true, page: 1 })}${next}`, { scroll: false });
   }
@@ -565,8 +600,16 @@ export function ListScreen({
           each scrolls its own content — the page itself never grows. Expressed
           against the viewport rather than as 856px so it holds on a taller
           screen; the filter rail has 33 fields on Leads today and would
-          otherwise push the page past the fold. */}
-      <div className="flex h-[calc(100vh-11.5rem)] items-stretch gap-6">
+          otherwise push the page past the fold.
+
+          168px = the measured chrome above and below: 68 top bar + 16 shell
+          padding + 56 toolbar band + 12 gutter = 152 to the panel's top edge
+          (`Rectangle 3`/`Rectangle 6` @272,152 and @514,152), and the shell's
+          16 again underneath (856 + 152 = 1008 of 1024).
+
+          gap-3, not gap-6: `Rectangle 3` is 230 wide at x=272 and ends at 502;
+          `Rectangle 6` starts at 514. That gutter is 12. */}
+      <div className="flex h-[calc(100vh-10.5rem)] items-stretch gap-3">
         <FilterPanel
           search={search}
           slug={slug}
@@ -576,6 +619,7 @@ export function ListScreen({
           views={views}
           appliedViewId={appliedView?.id ?? null}
           initialDrafts={rail.drafts}
+          initialSystem={railSystem}
           warnings={railWarnings}
           isFiltered={clientOwned || (appliedView?.filters ?? null) !== null}
           onApply={applyFilter}
@@ -608,20 +652,22 @@ export function ListScreen({
               if (sortKey === null) return;
               go({ sort: { fieldKey: sortKey, direction }, page: 1 });
             }}
-            filterCount={rail.drafts.length}
-            onFocusFilters={() => {
-              setFocusField(null);
-              setFocusToken((n) => n + 1);
-            }}
-            pageSize={query.size}
-            pageSizes={pageSizes}
-            onChangePageSize={(size) => go({ size, page: 1 })}
             duplicateCount={pendingDuplicates}
             onOpenReview={() => setReviewing(true)}
           />
 
           {problem !== null ? (
-            <p role="alert" className="border-b border-border bg-error/10 px-3 py-2 text-xs text-error">
+            // `color-mix`, not `bg-[var(--globalcolors-red-10)]`. These colours are CSS variables
+            // holding hex, so Tailwind emits no `.bg-error\/10` rule at all —
+            // the class is simply absent from the sheet and the banner paints
+            // no fill. Same workaround, same reason, as `chip.tsx`.
+            <p
+              role="alert"
+              className={
+                'border-b border-border px-3 py-2 text-xs text-error ' +
+                'bg-[color-mix(in_srgb,var(--error)_10%,transparent)]'
+              }
+            >
               {problem}
             </p>
           ) : null}
@@ -689,6 +735,11 @@ export function ListScreen({
             </PanelBody>
           ) : (
             <>
+          {/* The table takes whatever the panel has left after the toolbar and
+              the pager — measured 720 of the 856 panel — and scrolls inside
+              it. min-h-0 is what lets it shrink below its rows; without it the
+              rows push the pager out through the panel's floor. */}
+          <div className="flex min-h-0 min-w-0 flex-1">
           <RecordTable
             slug={slug}
             columns={tableColumns}
@@ -723,12 +774,19 @@ export function ListScreen({
                   : emptyMessage
             }
           />
+          </div>
 
           <Pagination
             slug={slug}
             page={query.page}
             pageCount={Math.ceil(visibleTotal / query.size)}
             hrefFor={(page) => `${href({ page })}${hash}`}
+            // "Show [ N ] Row" is part of the pagination cluster in the file,
+            // not of the toolbar — `Page Indicator` @526,959 sits in the same
+            // 849-wide row as the pager it is measured beside.
+            pageSize={query.size}
+            pageSizes={pageSizes}
+            onChangePageSize={(size) => go({ size, page: 1 })}
           />
             </>
           )}

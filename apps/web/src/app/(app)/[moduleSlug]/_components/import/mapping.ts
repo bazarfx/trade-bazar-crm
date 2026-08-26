@@ -29,7 +29,7 @@ import type { ModuleField } from './wire';
  * storage shape names those columns identically, which is why the four
  * literals below are safe — and they are COLUMNS, never field keys, labels or
  * module slugs, exactly as `cell.tsx` keys the status chip and
- * `record-form-overlay.tsx` keys the owner. An Admin renaming "Lead Owner" to
+ * `record-form-screen.tsx` keys the owner. An Admin renaming "Lead Owner" to
  * "Relationship Manager" changes nothing here.
  */
 const ENGINE_FILLED_COLUMNS: ReadonlySet<string> = new Set([

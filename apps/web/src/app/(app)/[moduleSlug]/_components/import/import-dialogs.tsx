@@ -2,7 +2,8 @@
 
 import { useId, useMemo, useState } from 'react';
 import { FIELD_TYPES, FIELD_TYPE_SPECS, type FieldType } from '@crm/shared';
-import { FieldLabel, Input, Popup, PopupFooter, Select } from '@/components/ui';
+import { Input, Popup, PopupFooter, Select } from '@/components/ui';
+import { ChevronDownIcon } from '../icons';
 import { api } from '@/lib/client-api';
 import { sampleValues } from './mapping';
 import type { ModuleField, StagedImportWire } from './wire';
@@ -76,6 +77,9 @@ export function AutoMappingPopup({ open, onCancel, onApply, trackPrefix }: AutoM
 
 export interface DefaultValuePopupProps {
   open: boolean;
+  /** module.labelPlural — the file writes "Field in Zoho CRM" and this is the
+   *  half of that sentence we are allowed to keep */
+  label: string;
   /** the mapped columns a default could be attached to */
   columns: readonly { column: string; field: string | null }[];
   catalogue: readonly ModuleField[];
@@ -84,19 +88,34 @@ export interface DefaultValuePopupProps {
   trackPrefix: string;
 }
 
+/** `Frame 2121453958` — 234x27, `r:2`, pad 4/12, value Regular 10px. */
+const PICKER =
+  'h-[27px] w-[234px] appearance-none rounded-[2px] border border-border bg-surface pl-3 pr-8 ' +
+  'text-[10px] text-body focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary';
+
 /**
- * Measured content: `Frame 2121453958` 234x27, a select whose resting label is
- * "Select Field" (12px #6b7280) with an `Icon / Chevron` 12x12 flush right.
- * Footer "Cancel" (#f6f8fa) · "Save" (#00667a).
+ * Re-measured on frames [20] and [21], and the earlier reading of it was one
+ * control short. `Frame 2121453960` is 463x60, `flex-col gap:12`:
  *
- * The file draws the picker and nothing else, which cannot express a default
- * on its own — a default needs a field AND a value. The value input is the one
- * addition, kept to the same `Input` primitive the mapping table already uses
- * for exactly this purpose, so the dialog writes the same
- * `ImportColumnMapping.defaultValue` the table row does.
+ *   `Frame 2121453959`  463x21, flex-row — TWO labels, Regular 14px `#111827`:
+ *                       "Field in Zoho CRM " 121 wide at x=0 and "Default
+ *                       Value" 88 wide flush right at x=375, i.e. a head whose
+ *                       two labels sit on the row's two ends
+ *   `Frame 2121453958`  234x27 — the picker, `#ffffff`, `border #e5e7eb`,
+ *                       `r:2`, pad 4/12, value Regular 10px `#6b7280`, an
+ *                       `Icon / Chevron` 12x12 flush right
+ *
+ * So the dialog IS two columns; the file simply leaves the right-hand one
+ * empty, because a static frame has nothing to type into. The value input goes
+ * under its own measured label rather than being invented below the picker —
+ * a default needs a field AND a value, and the file's own header says so.
+ *
+ * "Field in Zoho CRM" names the reference product; ours names the module.
+ * Footer "Cancel" (#f6f8fa) · "Save" (#00667a).
  */
 export function DefaultValuePopup({
   open,
+  label,
   columns,
   catalogue,
   onCancel,
@@ -137,37 +156,59 @@ export function DefaultValuePopup({
         />
       }
     >
-      {/* Each control in its own block: the file's Content column is
-          `flex-col gap:20`, which `Popup` already applies to these children. */}
-      <div>
-        <FieldLabel htmlFor={columnId}>Select Field</FieldLabel>
-        <Select
-          id={columnId}
-          value={column}
-          onChange={(e) => setColumn(e.target.value)}
-          data-track={`${trackPrefix}.default.column`}
-        >
-          <option value="">Select Field</option>
-          {choices.map((c) => {
-            const field = c.field === null ? null : byKey.get(c.field);
-            return (
-              <option key={c.column} value={c.column}>
-                {c.column} → {field?.label ?? c.field}
-              </option>
-            );
-          })}
-        </Select>
-      </div>
-      <div>
-        <FieldLabel htmlFor={valueId}>Default for empty cells</FieldLabel>
-        <Input
-          id={valueId}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          // The file's own placeholder wording on every Input Base it draws.
-          placeholder="Enter..."
-          data-track={`${trackPrefix}.default.value`}
-        />
+      {/* `Frame 2121453960` — the two-column head at gap 12, then the row of
+          controls beneath it. `Popup`'s Content column is `flex-col gap:20`,
+          which is the gap between this block and anything after it. */}
+      <div className="flex flex-col gap-3">
+        {/* `Frame 2121453959` 463x21 — the two labels are the ENDS of the row,
+            not a fixed first column: "Field in Zoho CRM " sits at x=0 (121
+            wide) and "Default Value" flush right at x=375 (88 wide, ending on
+            the row's own 463). Giving the first one the picker's 234 pushed
+            the second to x≈246, a third of the row short of the file. */}
+        <div className="flex items-center justify-between gap-3">
+          <label htmlFor={columnId} className="min-w-0 truncate text-sm leading-[21px] text-heading">
+            Field in {label}
+          </label>
+          <label htmlFor={valueId} className="shrink-0 text-sm leading-[21px] text-heading">
+            Default Value
+          </label>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="relative shrink-0">
+            <select
+              id={columnId}
+              value={column}
+              onChange={(e) => setColumn(e.target.value)}
+              className={PICKER}
+              data-track={`${trackPrefix}.default.column`}
+            >
+              <option value="">Select Field</option>
+              {choices.map((c) => {
+                const field = c.field === null ? null : byKey.get(c.field);
+                return (
+                  <option key={c.column} value={c.column}>
+                    {c.column} → {field?.label ?? c.field}
+                  </option>
+                );
+              })}
+            </select>
+            <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-3 w-3 -translate-y-1/2 text-body" />
+          </span>
+          <input
+            id={valueId}
+            type="text"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            // The file's own placeholder wording on every Input Base it draws.
+            placeholder="Enter..."
+            className={
+              'h-[27px] min-w-0 flex-1 rounded-[2px] border border-border bg-surface px-3 ' +
+              'text-[10px] text-heading placeholder:text-body focus:border-primary ' +
+              'focus:outline-none focus:ring-1 focus:ring-primary'
+            }
+            data-track={`${trackPrefix}.default.value`}
+          />
+        </div>
       </div>
     </Popup>
   );

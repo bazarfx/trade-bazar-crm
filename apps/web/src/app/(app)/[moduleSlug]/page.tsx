@@ -12,7 +12,7 @@ import type { DataTableColumn } from '@/components/ui';
 import { DEMO_AVATAR_ROW_KEY } from '@/components/demo-avatar';
 import { PageTitle } from '@/components/shell/page-title';
 import { ListActions } from './_components/list-actions';
-import { FilterToggle } from './_components/filter-toggle';
+import { FilterToggle, SaveFilterButton } from './_components/filter-toggle';
 import { ListScreen } from './_components/list-screen';
 import { NO_VIEW, parseListQuery, type ListQueryLimits } from './_components/list-query';
 import { SearchBox } from './_components/search-box';
@@ -437,19 +437,40 @@ export default async function ModulePage({
           what this did until now — was the visible mismatch the client
           called out. */}
       <div className="flex h-14 items-center justify-between rounded-md border border-border bg-surface px-3">
-        <FilterToggle slug={mod.slug} />
+        {/* The band's TWO filter controls, 10 apart: `Frame 482685` @284,93
+            and `Frame 482700` @416,93, both 122x38. Save Filter belongs here,
+            not in the rail footer — the file draws it in the band on the two
+            frames where a filter is live, and nowhere else. */}
+        <div className="flex items-center gap-2.5">
+          <FilterToggle slug={mod.slug} />
+          {/* The same predicate `list-screen.tsx` gives the rail as
+              `isFiltered`, read from the URL the client navigated to: an
+              ad-hoc filter announces itself with `f=1` (its VALUES stay in the
+              fragment, never in a query parameter), and a saved view carries
+              its own conditions. Both of those land here as a server render,
+              so the button appears and disappears with the filter. */}
+          {query.filtered || (appliedView?.filters ?? null) !== null ? (
+            <SaveFilterButton slug={mod.slug} />
+          ) : null}
+        </div>
         <ListActions
           slug={mod.slug}
           label={mod.label}
           labelPlural={mod.labelPlural}
-          // The record form has to know which field IS the status and which IS
-          // the owner — the status picker is fed from the `Status` table and
-          // both are filled server-side on create — and `FieldDto` does not
-          // serialise the column, so it travels from here. Keyed by field key,
-          // never by label: both sides read the physical column.
-          systemColumns={Object.fromEntries(fields.map((f) => [f.key, f.systemColumn]))}
-          canCreate={engine.can('create', mod.slug)}
+          // The storage shape's refusal reaches the button: a table the engine
+          // will not insert into (the deposit ledger) must not draw a Create
+          // that can only ever answer 422.
+          canCreate={engine.can('create', mod.slug) && storageShape.canInsertRows}
+          createBlockedReason={
+            storageShape.canInsertRows
+              ? undefined
+              : `${mod.labelPlural} are recorded by the system, not created by hand.`
+          }
           canImportExport={engine.hasSpecial('IMPORT_EXPORT')}
+          // Accounts are created through their own audited path (password,
+          // role, groups), so the Profile module's Create opens the account
+          // form. Decided from the storage shape above, never a slug.
+          account={isProfileModule ? { canManage: canManageRoles } : null}
           // The import wizard's last stage asks who owns the imported rows.
           // Whether that question exists at all is a storage property, not a
           // slug — the same answer the bulk reassign action reads.

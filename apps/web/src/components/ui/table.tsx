@@ -238,8 +238,14 @@ function FilterFunnel() {
  *         [Checkbox 20x20 (visible ONLY in column 0)]
  *         [label 14px Regular #111827] [Icon/CaretDoubleVertical 12x12]
  *         [oui:filter 16x16, pushed right]
+ *         strokePaints EMPTY — a header cell draws NO vertical rule
  *   FRAME "Rows"                  1688x45  bg:#ffffff  border:#e5e7eb 1px
  *   FRAME "Table / Base /  List"   200x45  flex-row gap:12 pad:10/12
+ *         borderLeftWeight:1 borderRightWeight:1 #e5e7eb — and NO top/bottom.
+ *         So the file draws a GRID: vertical rules between DATA columns only,
+ *         horizontal rules from the row frame. Re-measured off the real
+ *         instances inside `CRM _ Leads` (not the component master) on
+ *         26 Aug 2026 — the build had horizontal rules alone until then.
  *         [Checkbox 20x20 (column 0 only)]
  *         [Content flex-row gap:8 → Display Picture 24x24 + text]
  *
@@ -290,8 +296,34 @@ export function DataTable<T extends Record<string, unknown>>({
   }, [someSelected]);
 
   return (
-    <div className="w-full">
-      <div className="w-full overflow-auto">
+    // flex-col + min-h-0: the list panel bounds this component's height, and
+    // only a flex child that may shrink below its content lets the scroll port
+    // below actually scroll — without it the rows push the pager out of the
+    // panel instead. In an unbounded parent the column is content-sized, which
+    // is exactly what it was before.
+    <div className="flex min-h-0 w-full min-w-0 flex-col">
+      {/* The horizontal scrollbar the frame DRAWS: `Frame 482654` 910x20,
+          pad 6, r:24, over an 8-tall `Scroll Bar` thumb r:12 in #e5e7eb. It is
+          the table's own overflow bar, so it is styled rather than faked — the
+          6px inset is a transparent border on the thumb, which is the only way
+          to inset a webkit thumb inside its track. */}
+      <div
+        className={
+          // flex-auto, not flex-1: `flex-basis: auto` keeps this the height of
+          // its own rows in the screens that drop a DataTable into ordinary
+          // flow, while min-h-0 still lets it shrink — and therefore scroll —
+          // inside a panel that bounds it.
+          'min-h-0 w-full flex-auto overflow-auto ' +
+          '[&::-webkit-scrollbar]:h-5 [&::-webkit-scrollbar]:w-5 ' +
+          '[&::-webkit-scrollbar-track]:bg-transparent ' +
+          '[&::-webkit-scrollbar-thumb]:rounded-[12px] ' +
+          '[&::-webkit-scrollbar-thumb]:border-[6px] ' +
+          '[&::-webkit-scrollbar-thumb]:border-solid ' +
+          '[&::-webkit-scrollbar-thumb]:border-transparent ' +
+          '[&::-webkit-scrollbar-thumb]:bg-border ' +
+          '[&::-webkit-scrollbar-thumb]:bg-clip-content'
+        }
+      >
       <table
         className="w-full table-fixed border-collapse text-left"
         // minWidth, not width: the table fills a wide panel but refuses to
@@ -437,7 +469,13 @@ export function DataTable<T extends Record<string, unknown>>({
                     style={stickyStyle(offsets[i], col.pinned)}
                     className={cn(
                       // 45 tall, 1px #e5e7eb between rows, pad 10/12 → px-3.
-                      'h-[45px] border-b border-border px-3 text-sm',
+                      // border-r is the file's per-cell left+right rule: every
+                      // `Table / Base /  List` carries borderLeftWeight and
+                      // borderRightWeight 1 in #e5e7eb and no top/bottom, which
+                      // collapses to one vertical line per column boundary.
+                      // Header cells deliberately do NOT get one — their
+                      // strokePaints array is empty.
+                      'h-[45px] border-b border-r border-border px-3 text-sm',
                       // The file paints the first column's text #111827 and
                       // every later column #6b7280 — the title column reads as
                       // the record's identity. `renderCell` can still override.
