@@ -216,7 +216,7 @@ export function GroupsManager({ slug, languages, tabs }: GroupsManagerProps) {
                   onClick={() => void remove(row, false)}
                   disabled={deleting}
                   data-track={`${track}.delete.click`}
-                  className="text-error hover:bg-error/10"
+                  className="text-error hover:bg-[var(--globalcolors-red-10)]"
                 >
                   Delete
                 </Button>

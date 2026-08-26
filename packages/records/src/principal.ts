@@ -36,6 +36,15 @@ export interface Principal {
     languages: string[];
   };
   /**
+   * When this account's credentials last changed (a password reset). Access
+   * tokens are stateless, so the web session layer compares this against the
+   * token's `iat` and refuses anything minted before it — the only way
+   * "signed out everywhere" can be true before the token expires. Null when
+   * the credentials never changed; null on system principals, which hold no
+   * credentials at all.
+   */
+  credentialsChangedAt: Date | null;
+  /**
    * Set ONLY by `systemPrincipal()`. When present, every audit row the record
    * engine writes carries this actorType with a NULL actorId, and nothing is
    * stamped `createdBy` — there is no human in the loop and the log must not
@@ -140,6 +149,7 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
       departmentName: user.department?.name ?? null,
       languages: user.languages,
     },
+    credentialsChangedAt: user.credentialsChangedAt,
   };
 }
 
@@ -183,6 +193,7 @@ export function systemPrincipal(system: SystemActorType): Principal {
       departmentName: null,
       languages: [],
     },
+    credentialsChangedAt: null,
     system,
   };
 }

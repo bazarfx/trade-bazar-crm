@@ -308,7 +308,7 @@ export function AssignmentSettingsForm({ groups }: { groups: GroupOption[] }) {
         <PanelHeader title="Senior pool and default pool" />
         <PanelBody className="flex flex-col gap-8">
           {loadError !== null ? (
-            <p role="alert" className="rounded bg-error/10 px-3 py-2 text-sm text-error">
+            <p role="alert" className="rounded bg-[var(--globalcolors-red-10)] px-3 py-2 text-sm text-error">
               These settings could not be read: {loadError}
             </p>
           ) : null}

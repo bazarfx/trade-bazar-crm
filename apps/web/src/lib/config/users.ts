@@ -29,7 +29,13 @@ import 'server-only';
 import { prisma, Prisma } from '@crm/db';
 import { PermissionEngine, StorageResolver, type FieldMeta } from '@crm/core';
 import {
+  buildRecordSchema,
+  FIELD_TYPE_SPECS,
   HANDOVER_CLOSED_TAGS,
+  normalisePhone,
+  type FieldDef,
+  type FieldType,
+  type FieldValidation,
   type UserCreateInput,
   type UserUpdateInput,
 } from '@crm/shared';
@@ -40,7 +46,7 @@ import { hashPassword } from '@/lib/auth/passwords';
 import { revokeAllSessions } from '@/lib/auth/session';
 import { ConfigError, requireModule, type Tx } from '@/lib/config/service';
 import { listRecords } from '@/lib/records/list';
-import { serialiseRecord, type RecordRow } from '@/lib/records/serialise';
+import { plain, serialiseRecord, type RecordRow } from '@/lib/records/serialise';
 
 /**
  * The one slug this file names. A core module's slug IS its storage identity —
@@ -167,6 +173,21 @@ async function requireAssignableRole(principal: Principal, roleId: string): Prom
 }
 
 /**
+ * The mirror of `requireAssignableRole`: a LOCKED role is the Admin role, so
+ * ADMINISTERING an account that holds one — editing it, deactivating it,
+ * resetting its password — is holding the keys to every permission in the
+ * product. MANAGE_USERS_ROLES is delegable, and without this check a delegate
+ * could reset the Admin's password and simply sign in as them, which is the
+ * same escalation `requireAssignableRole` closes on the way up. `isLocked` is
+ * the flag `isAdmin` derives from everywhere else — never a role name.
+ */
+function assertMayAdministerTarget(principal: Principal, targetRoleIsLocked: boolean): void {
+  if (targetRoleIsLocked && !principal.actor.isAdmin) {
+    throw new ConfigError('Only an Admin can administer an Admin account', 403, 'FORBIDDEN');
+  }
+}
+
+/**
  * Last-admin protection (spec §13): the final ACTIVE user holding a locked
  * role cannot be deactivated or moved off it — there would be nobody left with
  * the rights to put them back.
@@ -215,6 +236,46 @@ async function assertGroupsExist(groupIds: string[]): Promise<void> {
 }
 
 /**
+ * A reporting manager must be an ACTIVE account, and setting one must keep the
+ * reporting graph a tree: the chain is read UPWARD, so any cycle — self, a
+ * two-step swap, or a longer ring — would never terminate for whatever walks
+ * it next. The walk follows the proposed manager's own chain; finding the user
+ * being edited on it means the assignment would close a ring. A visited set
+ * bounds the walk against rings already present in the data.
+ */
+async function assertReportingManager(managerId: string, selfId: string | null): Promise<void> {
+  const refuse = (message: string): never => {
+    throw new ConfigError(message, 400, 'VALIDATION', {
+      fields: { reportingManagerId: [message] },
+    });
+  };
+
+  if (selfId !== null && managerId === selfId) refuse('A user cannot report to themself');
+
+  const manager = await prisma.user.findFirst({
+    where: { id: managerId },
+    select: { id: true, isActive: true, reportingManagerId: true },
+  });
+  if (!manager) refuse('Unknown reporting manager');
+  if (!manager!.isActive) refuse('The chosen manager is deactivated');
+
+  if (selfId !== null) {
+    const visited = new Set<string>([managerId]);
+    let cursor = manager!.reportingManagerId;
+    while (cursor !== null) {
+      if (cursor === selfId) refuse('That would make the reporting chain a loop');
+      if (visited.has(cursor)) break;
+      visited.add(cursor);
+      const next = await prisma.user.findUnique({
+        where: { id: cursor },
+        select: { reportingManagerId: true },
+      });
+      cursor = next?.reportingManagerId ?? null;
+    }
+  }
+}
+
+/**
  * Email is the login identity and is unique in the database. Checking first
  * turns a 500 into a field error; the P2002 catch on the write is what makes
  * it correct under a race.
@@ -253,6 +314,146 @@ async function userFields(moduleId: string): Promise<FieldMeta[]> {
     select: { key: true, type: true, systemColumn: true },
   });
   return rows.map((f) => ({ key: f.key, type: f.type, systemColumn: f.systemColumn }));
+}
+
+// ── Admin-created fields (`User.custom`) ──────────────────────────────────
+
+/**
+ * The group-membership SHELL field's key. The field renders the membership UI
+ * but stores nothing — membership lives in GroupMember rows and travels as
+ * `groupIds`. The same name-gate `toListItem` reads (`'groups' in row`); if
+ * that gate ever retires, this exclusion retires with it.
+ */
+const GROUP_SHELL_KEY = 'groups';
+
+/** A live custom field, as validation wants it. */
+interface CustomFieldRow {
+  key: string;
+  label: string;
+  type: FieldType;
+  isRequired: boolean;
+  validation: unknown;
+  defaultValue: unknown;
+  options: { value: string }[];
+}
+
+/**
+ * The Profile module's WRITABLE custom fields — the Admin-created fields the
+ * account path may store into `User.custom` (`systemColumn` null; a system
+ * column is the fixed contract `userCreateSchema` already validates).
+ *
+ * Four exclusions, each because the account path cannot honour the type's
+ * contract, so accepting a value would store something nothing can resolve:
+ *  - derived types (FORMULA, AUTONUMBER): computed server-side, never
+ *    submitted — the record engine drops them from its write contract too;
+ *  - FILE / IMAGE: values are AttachmentRefs, and this path has no upload
+ *    flow to mint one;
+ *  - RECORD_LINK: no resolvable target here — a bare uuid checked against
+ *    nothing could point at any row in any module;
+ *  - the `groups` shell (see GROUP_SHELL_KEY above).
+ */
+async function writableCustomFields(moduleId: string): Promise<CustomFieldRow[]> {
+  const rows = await prisma.fieldDefinition.findMany({
+    // Soft-deleted fields keep their stored values (invariant 4) but are no
+    // longer part of the contract. Retired picklist options likewise: the
+    // historical value keeps rendering, a new write may not choose it.
+    where: { moduleId, systemColumn: null, isDeleted: false },
+    orderBy: { displayOrder: 'asc' },
+    select: {
+      key: true,
+      label: true,
+      type: true,
+      isRequired: true,
+      validation: true,
+      defaultValue: true,
+      options: { where: { isDeleted: false }, select: { value: true } },
+    },
+  });
+  return rows.filter(
+    (f) =>
+      !FIELD_TYPE_SPECS[f.type].isDerived &&
+      f.type !== 'FILE' &&
+      f.type !== 'IMAGE' &&
+      f.type !== 'RECORD_LINK' &&
+      f.key !== GROUP_SHELL_KEY,
+  );
+}
+
+/**
+ * Validate a submitted `custom` bag against the module's live custom fields.
+ *
+ * The ONE validation path for Admin-created values on an account, generated
+ * from FieldDefinition exactly like the record engine's: phones normalised to
+ * the matching key BEFORE the E.164 check, configured defaults filled on
+ * create for keys the payload did not mention, and `.partial()` semantics on
+ * update — only sent keys validate, so an absent required field is not a
+ * failure there, but a present one faces the same rules as on create.
+ *
+ * An unknown key THROWS, never dropped — the same rule as the filter
+ * compiler: silently narrowing what a payload said it wrote is how a form
+ * "saves" a value that never lands.
+ *
+ * Returns only the keys that were actually sent (plus create defaults), each
+ * reduced by `plain()` so the blob and the audit trail hold JSON — a `Date`
+ * stored raw would come back a string anyway, and the diff would log a change
+ * that never happened on every later save.
+ */
+function validateCustom(
+  submitted: Record<string, unknown>,
+  fields: CustomFieldRow[],
+  mode: 'create' | 'update',
+): Record<string, unknown> {
+  const known = new Set(fields.map((f) => f.key));
+  const unknown = Object.keys(submitted).filter((key) => !known.has(key));
+  if (unknown.length > 0) {
+    throw new ConfigError('Unknown custom field', 400, 'VALIDATION', {
+      fields: Object.fromEntries(
+        unknown.map((key) => [key, [`Unknown field "${key}" on the users module`]]),
+      ),
+    });
+  }
+
+  const values: Record<string, unknown> = { ...submitted };
+  for (const f of fields) {
+    if (f.type === 'PHONE') {
+      const raw = values[f.key];
+      if (typeof raw === 'string' && raw.trim() !== '') values[f.key] = normalisePhone(raw);
+    }
+    if (mode === 'create' && f.defaultValue !== null && f.defaultValue !== undefined) {
+      if (values[f.key] === undefined) values[f.key] = f.defaultValue;
+    }
+  }
+
+  const defs: FieldDef[] = fields.map((f) => ({
+    key: f.key,
+    label: f.label,
+    type: f.type,
+    isRequired: f.isRequired,
+    validation: (f.validation ?? null) as FieldValidation | null,
+    options: f.options,
+  }));
+  const schema = buildRecordSchema(defs);
+  // A ZodError from here leaves as guarded()'s uniform 400 VALIDATION with
+  // per-field messages, keyed by field key — same shape as the unknown-key
+  // refusal above.
+  const parsed = (
+    mode === 'create' ? schema.parse(values) : schema.partial().parse(values)
+  ) as Record<string, unknown>;
+
+  const out: Record<string, unknown> = {};
+  for (const f of fields) {
+    if (values[f.key] === undefined) continue; // never sent, no default
+    out[f.key] = plain(parsed[f.key] ?? null);
+  }
+  return out;
+}
+
+/** `User.custom` as a plain object — the column is Json, so the type system
+ *  only knows "some JSON". Anything else (a hand-written scalar) reads empty. */
+function customBlob(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 interface UserRelations {
@@ -314,6 +515,7 @@ function toListItem(row: RecordRow, relations: UserRelations | undefined): UserL
     isActive: typeof row['isActive'] === 'boolean' ? row['isActive'] : null,
     roleName: 'roleId' in row ? (relations?.roleName ?? null) : null,
     departmentName: 'departmentId' in row ? (relations?.departmentName ?? null) : null,
+    // The same 'groups' shell key as GROUP_SHELL_KEY — the two retire together.
     groupNames: 'groups' in row ? (relations?.groupNames ?? []) : [],
   };
 }
@@ -347,14 +549,22 @@ async function present(
  * The state this service writes, as the timeline should read it. The password
  * is absent by construction: CLAUDE.md forbids logging one, AuditLog is
  * append-only, and a hash written into a diff could never be taken back out.
+ *
+ * The custom blob is spread PER KEY, never as one value: `audit.diff` compares
+ * top-level keys, so this is what makes an `employee_code` edit read as its
+ * own line on the timeline rather than as "custom changed". Spread FIRST so a
+ * custom field whose key collides with a snapshot key (an Admin could mint
+ * `groupIds`) can never mask the account's own value.
  */
 function snapshot(user: UserRow, groupIds: string[]): Record<string, unknown> {
   return {
+    ...customBlob(user.custom),
     fullName: user.fullName,
     email: user.email,
     phone: user.phone,
     roleId: user.roleId,
     departmentId: user.departmentId,
+    reportingManagerId: user.reportingManagerId,
     languages: user.languages,
     isActive: user.isActive,
     groupIds: [...groupIds].sort(),
@@ -425,6 +635,112 @@ export async function listUsers(
   return { users: rows.map((r) => toListItem(r, relations.get(r.id))), total };
 }
 
+/**
+ * One account, in the shape the ADMIN's edit form needs: the system columns as
+ * ids (roleId, not a role name) plus the group membership, which lives in
+ * GroupMember rather than on the row and so is invisible to the record read.
+ *
+ * Gated on MANAGE_USERS_ROLES rather than the view scope on purpose: this is
+ * the write-side read — it exists to fill a form that only a manage-users
+ * holder may submit, and it exposes exactly the columns that form can write.
+ * The password hash is not selected and has no business here.
+ */
+export interface UserAccount {
+  id: string;
+  fullName: string;
+  email: string;
+  phone: string | null;
+  roleId: string;
+  departmentId: string | null;
+  reportingManagerId: string | null;
+  languages: string[];
+  isActive: boolean;
+  groupIds: string[];
+  /**
+   * Admin-created field values, the raw `User.custom` blob keyed by field key
+   * — what the form's dynamic fields edit and the PATCH's `custom` bag writes
+   * back. Raw because this read is already gated: MANAGE_USERS_ROLES plus the
+   * locked-role check above cover everything the account form touches.
+   */
+  custom: Record<string, unknown>;
+}
+
+/** The field keys the account form reads and writes — the seeded system
+ *  fields of the Profile module, whose keys equal their columns. */
+const ACCOUNT_CONTRACT_KEYS = [
+  'fullName',
+  'email',
+  'phone',
+  'roleId',
+  'departmentId',
+  'reportingManagerId',
+  'languages',
+  'isActive',
+  'groups',
+] as const;
+
+export async function getUserAccount(principal: Principal, userId: string): Promise<UserAccount> {
+  assertManageUsers(principal);
+
+  // Hidden fields never leave the server — CLAUDE.md makes that a security
+  // rule, and this endpoint returns raw columns rather than going through the
+  // serialiser. Nulling the hidden ones instead would arm a different trap:
+  // the form resubmits every key, so a null it was handed becomes a clear it
+  // never meant. A role whose matrix hides part of the account contract is
+  // refused outright — the config is contradictory, and fail-closed is the
+  // only honest answer.
+  const engine = new PermissionEngine(principal.actor, principal.permissions);
+  const hidden = engine.hiddenFields(USERS_MODULE_SLUG);
+  if (ACCOUNT_CONTRACT_KEYS.some((key) => hidden.has(key))) {
+    throw new ConfigError(
+      'Your role hides fields this form edits, so accounts cannot be opened for editing',
+      403,
+      'FORBIDDEN',
+    );
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      phone: true,
+      roleId: true,
+      departmentId: true,
+      reportingManagerId: true,
+      languages: true,
+      isActive: true,
+      custom: true,
+      role: { select: { isLocked: true } },
+      // LIVE memberships only. A soft-deleted group keeps its member rows so a
+      // restore brings the team back (invariant 4), but the form can only offer
+      // live groups — handing it a dead id would put an uncheckable value in
+      // every save payload, and `assertGroupsExist` would then refuse every
+      // edit of this account for a checkbox nobody can see.
+      groups: { where: { group: { isDeleted: false } }, select: { groupId: true } },
+    },
+  });
+  if (!user) throw new ConfigError('Unknown user', 404, 'NOT_FOUND');
+  // The read is part of administering the account: the same locked-role rule
+  // as the writes, or a delegate could still pull the Admin's login identity.
+  assertMayAdministerTarget(principal, user.role.isLocked);
+
+  return {
+    id: user.id,
+    fullName: user.fullName,
+    email: user.email,
+    phone: user.phone,
+    roleId: user.roleId,
+    departmentId: user.departmentId,
+    reportingManagerId: user.reportingManagerId,
+    languages: user.languages,
+    isActive: user.isActive,
+    groupIds: user.groups.map((g) => g.groupId).sort(),
+    custom: customBlob(user.custom),
+  };
+}
+
 // ── writes ────────────────────────────────────────────────────────────────
 
 export async function createUser(
@@ -439,8 +755,17 @@ export async function createUser(
 
   await requireAssignableRole(principal, input.roleId);
   if (input.departmentId) await assertDepartmentExists(input.departmentId);
+  if (input.reportingManagerId) await assertReportingManager(input.reportingManagerId, null);
   await assertGroupsExist(input.groupIds);
   await assertEmailAvailable(input.email, null);
+
+  // The Admin's own fields, validated by the field engine — the account
+  // schema carries the bag opaquely because it cannot know fields that did
+  // not exist until an Admin created them.
+  const custom =
+    input.custom !== undefined
+      ? validateCustom(input.custom, await writableCustomFields(module.id), 'create')
+      : null;
 
   // Hashing is deliberately OUTSIDE the transaction: bcrypt at cost 12 takes
   // hundreds of milliseconds, and holding a pooled cross-region connection
@@ -458,8 +783,10 @@ export async function createUser(
           phone: input.phone ?? null,
           roleId: input.roleId,
           departmentId: input.departmentId ?? null,
+          reportingManagerId: input.reportingManagerId ?? null,
           languages: input.languages,
           isActive: input.isActive,
+          ...(custom ? { custom: custom as Prisma.InputJsonObject } : {}),
         },
         select: USER_SELECT,
       });
@@ -498,17 +825,45 @@ export async function updateUser(
 
   const existing = await prisma.user.findUnique({
     where: { id: userId },
-    select: { ...USER_SELECT, role: { select: { isLocked: true } }, groups: { select: { groupId: true } } },
+    select: {
+      ...USER_SELECT,
+      role: { select: { isLocked: true } },
+      // Live memberships only, mirroring the replacement below — otherwise the
+      // audit diff would claim a soft-deleted group's membership was removed
+      // when its row in fact survives for the restore.
+      groups: { where: { group: { isDeleted: false } }, select: { groupId: true } },
+    },
   });
   if (!existing) throw new ConfigError('Unknown user', 404, 'NOT_FOUND');
+  assertMayAdministerTarget(principal, existing.role.isLocked);
 
   const movingRole = input.roleId !== undefined && input.roleId !== existing.roleId;
   if (movingRole && input.roleId) await requireAssignableRole(principal, input.roleId);
   if (input.departmentId) await assertDepartmentExists(input.departmentId);
+  if (input.reportingManagerId) await assertReportingManager(input.reportingManagerId, userId);
   if (input.groupIds) await assertGroupsExist(input.groupIds);
   if (input.email !== undefined && input.email !== existing.email) {
     await assertEmailAvailable(input.email, userId);
   }
+
+  // The custom bag is a PATCH within the PATCH: only sent keys were validated,
+  // `null` clears a key, everything else merges over the stored blob. Written
+  // only when the merge actually changed something, so a form that resubmits
+  // what it read neither rewrites the row nor invents a timeline entry.
+  const beforeCustom = customBlob(existing.custom);
+  let afterCustom = beforeCustom;
+  if (input.custom !== undefined) {
+    const patch = validateCustom(input.custom, await writableCustomFields(module.id), 'update');
+    const merged = { ...beforeCustom };
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null) delete merged[key];
+      else merged[key] = value;
+    }
+    // Key order survives a spread-plus-overwrite, so an unchanged merge
+    // stringifies identically to what was read.
+    if (JSON.stringify(merged) !== JSON.stringify(beforeCustom)) afterCustom = merged;
+  }
+  const customChanged = afterCustom !== beforeCustom;
 
   // Deactivating through this route is the same act as the /active route, and
   // carries the same two consequences: the guardrail, and dead sessions.
@@ -549,8 +904,12 @@ export async function updateUser(
           ...(input.phone !== undefined ? { phone: input.phone ?? null } : {}),
           ...(input.roleId !== undefined ? { roleId: input.roleId } : {}),
           ...(input.departmentId !== undefined ? { departmentId: input.departmentId ?? null } : {}),
+          ...(input.reportingManagerId !== undefined
+            ? { reportingManagerId: input.reportingManagerId ?? null }
+            : {}),
           ...(input.languages !== undefined ? { languages: input.languages } : {}),
           ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+          ...(customChanged ? { custom: afterCustom as Prisma.InputJsonObject } : {}),
         },
         select: USER_SELECT,
       });
@@ -559,7 +918,10 @@ export async function updateUser(
         // Replaced wholesale rather than diffed: GroupMember carries nothing
         // but the pair, so there is no state to preserve, and one delete plus
         // one insert inside the transaction cannot leave a half-applied set.
-        await tx.groupMember.deleteMany({ where: { userId } });
+        // LIVE memberships only: a soft-deleted group retains its member rows
+        // so a restore brings the team back (invariant 4), and the form was
+        // never shown those — an account edit must not quietly erase them.
+        await tx.groupMember.deleteMany({ where: { userId, group: { isDeleted: false } } });
         if (afterGroupIds.length > 0) {
           await tx.groupMember.createMany({
             data: afterGroupIds.map((groupId) => ({ userId, groupId })),
@@ -616,6 +978,7 @@ export async function setUserActive(
     select: { id: true, isActive: true, role: { select: { isLocked: true } } },
   });
   if (!existing) throw new ConfigError('Unknown user', 404, 'NOT_FOUND');
+  assertMayAdministerTarget(principal, existing.role.isLocked);
 
   // An activation has nothing to hand over, so a target sent with one is
   // ignored rather than acted on — moving records is not what was asked for.
@@ -682,6 +1045,75 @@ export async function setUserActive(
     ownedOpenRecords: 0,
     reassigned,
   };
+}
+
+// ── password reset (spec §5.5) ────────────────────────────────────────────
+
+/**
+ * Reset an account's password to a value the Admin chose or generated.
+ *
+ * Three consequences, in order:
+ *  - the hash is replaced (bcrypt runs OUTSIDE the transaction, same as
+ *    create — see the note there);
+ *  - a PASSWORD_RESET entry lands in the append-only log WITH NO DIFF: that a
+ *    reset happened, by whom and when, is the timeline's business — the value
+ *    never is (CLAUDE.md forbids logging credentials, and this log can never
+ *    be amended);
+ *  - every live session dies, because a reset usually means "this account may
+ *    be in the wrong hands" and the old credential must stop working NOW, not
+ *    when a token expires.
+ *
+ * The plaintext is returned to the caller ONCE, for the Admin to hand to the
+ * user. It is never stored and cannot be read back later — there is nothing to
+ * read back.
+ */
+export async function resetUserPassword(
+  principal: Principal,
+  userId: string,
+  password: string,
+): Promise<{ user: UserListItem; password: string }> {
+  assertManageUsers(principal);
+
+  const module = await requireModule(USERS_MODULE_SLUG);
+  const engine = new PermissionEngine(principal.actor, principal.permissions);
+  const fields = await userFields(module.id);
+
+  const existing = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, role: { select: { isLocked: true } } },
+  });
+  if (!existing) throw new ConfigError('Unknown user', 404, 'NOT_FOUND');
+  // Resetting a password IS taking the account over — a delegate must never
+  // be able to do that to an Admin.
+  assertMayAdministerTarget(principal, existing.role.isLocked);
+
+  const passwordHash = await hashPassword(password);
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.update({
+      where: { id: userId },
+      // The stamp is what makes "signed out everywhere" true NOW rather than
+      // when the access token expires: the session layer refuses any token
+      // minted before it. Revoking refresh rows alone closes only the renewal
+      // path, not the live 15-minute window.
+      data: { passwordHash, credentialsChangedAt: new Date() },
+      select: USER_SELECT,
+    });
+    await tx.auditLog.create({
+      data: {
+        entityType: USER_ENTITY_TYPE,
+        entityId: userId,
+        action: 'PASSWORD_RESET',
+        actorType: 'USER',
+        actorId: principal.actor.userId,
+      },
+    });
+    return user;
+  });
+
+  await revokeAllSessions(userId);
+
+  return { user: await present(engine, module, fields, updated), password };
 }
 
 // ── handover (spec §5.5) ──────────────────────────────────────────────────

@@ -48,12 +48,25 @@ import { formatMoney } from './money';
  * beside it; this map only says what that tone looks like when it is a solid
  * area rather than a bordered pill.
  */
+/**
+ * The bar's segment fills, and they must agree with the CHIP that sits beside
+ * them — both resolve through the same `toneForTag`, so a reader seeing a
+ * purple chip and a blue bar segment for one status would be right to think
+ * one of them is lying.
+ *
+ * The chips were moved onto the file's own badge pairs (a `-10` tint under a
+ * `-60` label) on 26 Aug; the accent hues they used before — `--accents-blue`,
+ * `--accents-green`, `--accents-orange` — are painted on no badge anywhere in
+ * the Figma file. A bar is a SOLID fill rather than a tint, so it takes the
+ * `-60` half of each pair: the same hue family as the chip, at the weight a
+ * filled bar needs.
+ */
 const TONE_FILL: Record<ChipTone, string> = {
   neutral: 'bg-muted',
-  info: 'bg-info',
-  success: 'bg-success',
-  warning: 'bg-warning',
-  error: 'bg-error',
+  info: 'bg-[var(--globalcolors-blue-60)]',
+  success: 'bg-[var(--globalcolors-green-60)]',
+  warning: 'bg-[var(--globalcolors-orange-60)]',
+  error: 'bg-[var(--globalcolors-red-60)]',
 };
 
 /** Records that sit on no tag at all — see `remainder` below. */
@@ -203,7 +216,7 @@ function ClosedTile({ credit }: { credit: ClosedCredit }) {
     // Visually distinct from an ownership tile on purpose: closed credit is a
     // different KIND of number — it is what commission is paid on, and it must
     // never be read as "records they are working".
-    <div className="min-w-0 rounded-md border border-success bg-success/10 p-4">
+    <div className="min-w-0 rounded-md border border-success bg-[var(--globalcolors-green-10)] p-4">
       <p className="text-title font-medium tabular-nums text-heading">{credit.count}</p>
       <p className="truncate text-xs text-body" title={`${credit.labelPlural} closed`}>
         {credit.labelPlural} closed
@@ -309,7 +322,7 @@ export function WorkloadPanel({ slug, recordId, initial, className }: WorkloadPa
 
       <PanelBody className="flex flex-col gap-6">
         {error !== null ? (
-          <p role="alert" className="rounded bg-error/10 px-3 py-2 text-xs text-error">
+          <p role="alert" className="rounded bg-[var(--globalcolors-red-10)] px-3 py-2 text-xs text-error">
             {error}
           </p>
         ) : null}

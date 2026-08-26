@@ -54,18 +54,39 @@ export async function issueSession(userId: string): Promise<void> {
   });
 }
 
-/** The user id on the current request, or null. Signature check only. */
-export async function getSession(): Promise<{ userId: string } | null> {
+/** The user id on the current request, or null. Signature check only.
+ *  `issuedAtMs` carries the token's own mint time for the credentials check
+ *  below — a claim, not a database fact. */
+export async function getSession(): Promise<{ userId: string; issuedAtMs: number | null } | null> {
   const token = (await cookies()).get(ACCESS_COOKIE)?.value;
   if (!token) return null;
   const claims = await verifyAccessToken(token);
-  return claims ? { userId: claims.sub } : null;
+  if (!claims) return null;
+  return {
+    userId: claims.sub,
+    issuedAtMs: typeof claims.iat === 'number' ? claims.iat * 1000 : null,
+  };
 }
 
 /** Session plus the database-resolved actor and permissions. */
 export async function getPrincipal(): Promise<Principal | null> {
   const session = await getSession();
-  return session ? loadPrincipal(session.userId) : null;
+  if (!session) return null;
+  const principal = await loadPrincipal(session.userId);
+  if (!principal) return null;
+  // Access tokens are stateless, so a password reset cannot recall them — it
+  // stamps `credentialsChangedAt` instead, and any token minted before that
+  // moment is refused here. Without this, "signed out everywhere" would be a
+  // lie for up to JWT_ACCESS_TTL. A token with no readable iat is treated as
+  // pre-dating the stamp: fail closed, the user just signs in again.
+  const changed = principal.credentialsChangedAt;
+  if (changed !== null) {
+    // `iat` is second-truncated; comparing against the stamp's own second
+    // keeps a sign-in from the same second as the reset from being bounced.
+    const changedSecondMs = Math.floor(changed.getTime() / 1000) * 1000;
+    if (session.issuedAtMs === null || session.issuedAtMs < changedSecondMs) return null;
+  }
+  return principal;
 }
 
 /**

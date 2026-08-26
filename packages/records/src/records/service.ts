@@ -34,6 +34,7 @@ import {
   type FieldDef,
   type FieldType,
   type FieldValidation,
+  type SystemFilterSelection,
 } from '@crm/shared';
 import type { Principal } from '../principal.js';
 import { ASSIGNMENT_REASON_KEY, assignOwner, type AssignmentReason } from '../assignment/index.js';
@@ -55,6 +56,7 @@ import {
   type Storage,
 } from './list.js';
 import { NEVER_SERIALISED, plain, serialiseRecord } from './serialise.js';
+import { systemFilterWhere } from './system-filters.js';
 
 /** Client IP and user agent, as `requestMeta(req)` returns them. Optional
  *  because the worker's writers (webhook, import) have no HTTP request. */
@@ -484,16 +486,41 @@ interface OwnerDecision {
 
 // ── read ──────────────────────────────────────────────────────────────────
 
+/**
+ * What a CALLER may ask the list for.
+ *
+ * `systemWhere` is deliberately not part of it: that field carries resolved
+ * Prisma fragments, and a route handler that could set it would be posting a
+ * `where` straight into the repository. A caller names the system filter ROWS
+ * it wants; this function is what turns them into fragments, having first
+ * checked that this module can answer each one.
+ */
+export type ListRecordsRequest = Omit<RecordQuery, 'systemWhere'> & {
+  take?: number;
+  skip?: number;
+  /** the System Defined Filters group on the rail; see `./system-filters.ts` */
+  system?: readonly SystemFilterSelection[] | null;
+};
+
 /** The list, for a module named by slug. Storage, scope and serialisation all
  *  live in `records/list.ts`; this only resolves the config it needs. */
 export async function listModuleRecords(
   principal: Principal,
   moduleSlug: string,
-  opts: RecordQuery & { take?: number; skip?: number },
+  opts: ListRecordsRequest,
 ): Promise<{ records: RecordRow[]; total: number; page: number; pageSize: number }> {
   const ctx = await moduleContext(principal, moduleSlug);
+  const { system, ...query } = opts;
+  // Resolved HERE, where the module's shape is known, and refused loudly when
+  // this module cannot answer a row. `listRecords` receives fragments it only
+  // has to AND — it never learns which filter produced which condition.
+  const systemWhere = await systemFilterWhere(
+    { shape: ctx.storage.shape, hasTimeline: ctx.module.hasTimeline },
+    system,
+  );
   const { rows, total, page, pageSize } = await listRecords({
-    ...opts,
+    ...query,
+    systemWhere,
     module: ctx.module,
     fields: ctx.metas,
     engine: ctx.engine,
@@ -538,6 +565,20 @@ export async function createRecord(
   const ctx = await moduleContext(principal, moduleSlug);
   if (!ctx.engine.can('create', moduleSlug)) {
     throw new ConfigError('You cannot create records in this module', 403, 'FORBIDDEN');
+  }
+
+  // A table that refuses engine inserts (the user and deposit tables) has its
+  // own write path with its own contract — an account needs a password and a
+  // role, a deposit needs its webhook event — and an insert here would arrive
+  // without them and die as a constraint violation. Refusing is the import
+  // service's rule (`canInsertRows`), applied at the same depth. A STORAGE
+  // fact, never a slug test.
+  if (!ctx.storage.shape.canInsertRows) {
+    throw new ConfigError(
+      'Records in this module are managed through their own administration screen and cannot be created here',
+      422,
+      'GUARDRAIL',
+    );
   }
 
   const { storage, module } = ctx;
@@ -893,6 +934,19 @@ export async function updateRecord(
 ): Promise<RecordRow> {
   const ctx = await moduleContext(principal, moduleSlug);
   const { storage, module } = ctx;
+
+  // The same refusal as on create, for the same reason: an account or a
+  // ledger row has consequences the generic engine does not know — a
+  // deactivation must hand over records and kill sessions, a role change is
+  // a guardrailed power, a deposit is derived state. Their own services
+  // carry those rules; a PATCH here would walk straight past them.
+  if (!storage.shape.canInsertRows) {
+    throw new ConfigError(
+      'Records in this module are managed through their own administration screen and cannot be edited here',
+      422,
+      'GUARDRAIL',
+    );
+  }
 
   // Closed By is IMMUTABLE (spec §7.1: "the telesales agent who owned the
   // lead at conversion. Immutable. Permanent credit — this is what

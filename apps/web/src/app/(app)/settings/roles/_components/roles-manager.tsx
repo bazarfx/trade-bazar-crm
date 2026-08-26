@@ -154,7 +154,7 @@ export function RolesManager() {
             size="sm"
             onClick={() => setBanner(null)}
             data-track={`${TRACK}.banner.dismiss`}
-            className="text-error hover:bg-error/10"
+            className="text-error hover:bg-[var(--globalcolors-red-10)]"
           >
             Dismiss
           </Button>

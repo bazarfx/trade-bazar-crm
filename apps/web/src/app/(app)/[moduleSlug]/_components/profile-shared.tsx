@@ -97,8 +97,8 @@ export function PopupTextField({
 export type NoticeTone = 'warning' | 'error' | 'info';
 
 const NOTICE_TONE: Record<NoticeTone, string> = {
-  warning: 'border border-warning bg-warning/10 text-heading',
-  error: 'bg-error/10 text-error',
+  warning: 'border border-warning bg-[var(--globalcolors-orange-10)] text-heading',
+  error: 'bg-[var(--globalcolors-red-10)] text-error',
   info: 'border border-border bg-background text-heading',
 };
 
@@ -131,7 +131,7 @@ export function Notice({ tone, children, onDismiss, track }: NoticeProps) {
         onClick={onDismiss}
         aria-label="Dismiss"
         data-track={track}
-        className={tone === 'error' ? 'text-error hover:bg-error/10' : undefined}
+        className={tone === 'error' ? 'text-error hover:bg-[var(--globalcolors-red-10)]' : undefined}
       >
         Dismiss
       </Button>

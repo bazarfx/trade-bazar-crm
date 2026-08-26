@@ -209,7 +209,7 @@ export function DepartmentsManager({ slug, labelPlural, departmentField, tabs }:
                   onClick={() => void remove(row, false)}
                   disabled={deleting}
                   data-track={`${track}.delete.click`}
-                  className="text-error hover:bg-error/10"
+                  className="text-error hover:bg-[var(--globalcolors-red-10)]"
                 >
                   Delete
                 </Button>

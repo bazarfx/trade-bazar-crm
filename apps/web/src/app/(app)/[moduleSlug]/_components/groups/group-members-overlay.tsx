@@ -182,7 +182,7 @@ export function GroupMembersOverlay({ slug, group, onChanged, onClose }: GroupMe
                           disabled={busy.has(m.userId)}
                           loading={busy.has(m.userId)}
                           data-track={`${track}.remove`}
-                          className="text-error hover:bg-error/10"
+                          className="text-error hover:bg-[var(--globalcolors-red-10)]"
                         >
                           Remove
                         </Button>

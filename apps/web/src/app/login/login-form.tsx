@@ -67,7 +67,7 @@ export function LoginForm({ redirectTo }: { redirectTo: string }) {
       <FieldError>{errors.password?.message}</FieldError>
 
       {formError && (
-        <p role="alert" className="mt-4 rounded bg-error/10 px-3 py-2 text-xs text-error">
+        <p role="alert" className="mt-4 rounded bg-[var(--globalcolors-red-10)] px-3 py-2 text-xs text-error">
           {formError}
         </p>
       )}
