@@ -200,7 +200,7 @@ export function FieldBuilder({ slug, label }: { slug: string; label: string }) {
   }
   if (loadError) {
     return (
-      <p role="alert" className="rounded bg-error/10 px-3 py-2 text-sm text-error">
+      <p role="alert" className="rounded bg-[var(--globalcolors-red-10)] px-3 py-2 text-sm text-error">
         {loadError}
       </p>
     );
@@ -209,7 +209,7 @@ export function FieldBuilder({ slug, label }: { slug: string; label: string }) {
   return (
     <div>
       {notice && (
-        <div className="mb-4 flex items-start justify-between gap-4 rounded border border-warning bg-warning/10 px-3 py-2 text-sm text-heading">
+        <div className="mb-4 flex items-start justify-between gap-4 rounded border border-warning bg-[var(--globalcolors-orange-10)] px-3 py-2 text-sm text-heading">
           <p>{notice}</p>
           <Button
             variant="ghost"
@@ -225,7 +225,7 @@ export function FieldBuilder({ slug, label }: { slug: string; label: string }) {
       {actionError && (
         <div
           role="alert"
-          className="mb-4 flex items-start justify-between gap-4 rounded bg-error/10 px-3 py-2 text-sm text-error"
+          className="mb-4 flex items-start justify-between gap-4 rounded bg-[var(--globalcolors-red-10)] px-3 py-2 text-sm text-error"
         >
           <p>{actionError}</p>
           <Button
@@ -234,7 +234,7 @@ export function FieldBuilder({ slug, label }: { slug: string; label: string }) {
             onClick={() => setActionError(null)}
             aria-label="Dismiss error"
             data-track={`${slug}.fields.error.dismiss`}
-            className="text-error hover:bg-error/10"
+            className="text-error hover:bg-[var(--globalcolors-red-10)]"
           >
             Dismiss
           </Button>

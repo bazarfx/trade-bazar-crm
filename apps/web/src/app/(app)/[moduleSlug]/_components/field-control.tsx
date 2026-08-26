@@ -148,6 +148,7 @@ export function FieldControl({ slug, field, register, control, error }: FieldCon
       return (
         <Input
           id={id}
+            tone="form"
           disabled
           readOnly
           value={field.locked.display}
@@ -164,6 +165,7 @@ export function FieldControl({ slug, field, register, control, error }: FieldCon
         return (
           <Input
             id={id}
+            tone="form"
             type={field.type === 'EMAIL' ? 'email' : field.type === 'URL' ? 'url' : 'text'}
             placeholder={ENTER}
             // Hard-capping the input is what makes the counter mean something;
@@ -179,6 +181,7 @@ export function FieldControl({ slug, field, register, control, error }: FieldCon
         return (
           <Textarea
             id={id}
+            tone="form"
             rows={4}
             placeholder={WRITE_HERE}
             maxLength={field.maxLength ?? undefined}
@@ -195,6 +198,7 @@ export function FieldControl({ slug, field, register, control, error }: FieldCon
           // (spec §6.6), so local formats are accepted as typed.
           <Input
             id={id}
+            tone="form"
             type="tel"
             inputMode="tel"
             autoComplete="tel"
@@ -212,6 +216,7 @@ export function FieldControl({ slug, field, register, control, error }: FieldCon
         return (
           <Input
             id={id}
+            tone="form"
             type="number"
             // NUMBER is whole by contract (the generated schema calls .int());
             // the other three accept fractions.
@@ -314,6 +319,7 @@ export function FieldControl({ slug, field, register, control, error }: FieldCon
         return (
           <Input
             id={id}
+            tone="form"
             type={field.type === 'DATE' ? 'date' : 'datetime-local'}
             data-track={track}
             aria-invalid={invalid}
@@ -344,6 +350,7 @@ export function FieldControl({ slug, field, register, control, error }: FieldCon
           // must not be part of the payload or of the generated schema.
           <Input
             id={id}
+            tone="form"
             disabled
             readOnly
             value=""
@@ -363,6 +370,7 @@ export function FieldControl({ slug, field, register, control, error }: FieldCon
         return (
           <Input
             id={id}
+            tone="form"
             disabled
             readOnly
             value=""
@@ -405,6 +413,7 @@ export function FieldControl({ slug, field, register, control, error }: FieldCon
     <div className="min-w-0">
       <div className="flex items-baseline justify-between gap-3">
         <FieldLabel
+          tone="form"
           // A group is not a form control, so `for` would point at nothing the
           // browser can focus.
           htmlFor={GROUPED.has(field.type) ? undefined : id}

@@ -5,7 +5,7 @@ import { FullScreenOverlay } from '@/components/overlay/full-screen-overlay';
 import { api, ApiClientError } from '@/lib/client-api';
 import type { EditorSection } from './draft';
 
-const COLUMN_CHOICES = [1, 2, 3] as const;
+const COLUMN_CHOICES = [1, 2, 3, 4] as const;
 
 interface SectionFormProps {
   slug: string;
@@ -24,7 +24,7 @@ interface SectionFormProps {
  */
 export function SectionForm({ slug, section, onSaved, onClose }: SectionFormProps) {
   const [label, setLabel] = useState(section?.label ?? '');
-  const [columns, setColumns] = useState(section?.columns ?? 3);
+  const [columns, setColumns] = useState(section?.columns ?? 4);
   const [isCollapsible, setIsCollapsible] = useState(section?.isCollapsible ?? false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,7 +104,7 @@ export function SectionForm({ slug, section, onSaved, onClose }: SectionFormProp
         </label>
 
         {error && (
-          <p role="alert" className="mt-6 rounded bg-error/10 px-3 py-2 text-xs text-error">
+          <p role="alert" className="mt-6 rounded bg-[var(--globalcolors-red-10)] px-3 py-2 text-xs text-error">
             {error}
           </p>
         )}

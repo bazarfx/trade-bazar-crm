@@ -18,21 +18,33 @@ import type { FieldDto } from '@/lib/config/fields';
 import type { StatusDto } from '@/lib/config/statuses';
 import type { UserListItem } from '@/lib/config/users';
 import { api, ApiClientError } from '@/lib/client-api';
-import { FullScreenOverlay } from '@/components/overlay/full-screen-overlay';
-import { Button } from '@/components/ui';
+import { Popup, PopupFooter } from '@/components/ui';
+import { FormLayoutEdit } from './form-layout-edit';
+import { useSpecials } from './specials';
+import { PageTitle } from '@/components/shell/page-title';
 import {
   FieldControl,
   type FormField,
   type PicklistOption,
   type RecordFormValues,
 } from './field-control';
-import { SectionNav, useActiveSection } from './section-nav';
 
 /**
- * THE record create/edit form. One overlay serves every module and both modes:
+ * THE record create/edit form. One screen serves every module and both modes:
  * "Create Lead" and "Edit Invoice" are the same component reading different
  * config rows. Its sections, its grid, its controls and its validation are all
  * generated — there is no per-module form and there never will be.
+ *
+ * A PAGE, not an overlay, and that is measured rather than chosen: the file's
+ * `CRM _ Leads_Create Leads` frame draws the sidebar (256 wide) and the top
+ * bar (1184x68) around the form, with the title in the top bar at @286,21 —
+ * so the shell stays on screen, exactly as it does for Import. The layout
+ * below is measured off that frame: a 1152-wide content wrapper (which the
+ * shell's own p-4 produces at 1440), section headers at 16px Semi Bold with a
+ * collapse chevron, a full-width rule under each, and a 4-column grid of
+ * 273-wide fields at a 12px gap. The actions sit ABOVE the form on the right,
+ * with the save state on the left; the file draws no sticky footer and no
+ * section navigator, so this has neither.
  *
  * It composes four config reads and nothing else:
  *   fields   → what to render and how to validate it
@@ -40,7 +52,8 @@ import { SectionNav, useActiveSection } from './section-nav';
  *   statuses → the pipeline picker, which is a table, not a picklist
  *   users    → the owner picker
  *
- * Full screen, never a modal card (CLAUDE.md, UI rules).
+ * Cancelling with unsaved work raises the guard the file draws as
+ * `-cANCEL`: a 511x203 pop-up, the same shell as Delete Saved Filter.
  */
 
 /**
@@ -63,6 +76,56 @@ const STATUS_COLUMN = 'statusId';
  */
 const UNWRITABLE_TYPES: ReadonlySet<FieldType> = new Set<FieldType>(['FILE', 'IMAGE']);
 
+/**
+ * The three footer buttons, measured off `Frame 482710` (400x38 = 132 + 12 +
+ * 122 + 12 + 122). They are NOT the `Button` primitive: that one is traced
+ * from the Leads header, whose secondary is white with a grey border. This
+ * row's middle button is canvas-grey with a PRIMARY border, which the
+ * primitive has no variant for, so the recipes are stated here rather than
+ * fought through overrides that resolve by stylesheet order.
+ */
+const FORM_BUTTON_BASE =
+  'inline-flex h-[38px] shrink-0 items-center justify-center rounded px-3 text-xs font-normal ' +
+  'transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ' +
+  'focus-visible:ring-offset-2 focus-visible:ring-offset-background ' +
+  'disabled:cursor-not-allowed disabled:opacity-60';
+
+const FORM_BUTTON = {
+  // 132x38, #00667a, white label
+  primary: `${FORM_BUTTON_BASE} w-[132px] border border-border bg-primary text-surface hover:bg-primary-strong`,
+  // 122x38, #f6f8fa fill with a #00667a border — the file's own middle state
+  accent: `${FORM_BUTTON_BASE} w-[122px] border border-primary bg-background text-primary hover:bg-surface`,
+  // 122x38, white with the standard #e5e7eb border
+  neutral: `${FORM_BUTTON_BASE} w-[122px] border border-border bg-surface text-heading hover:bg-background`,
+} as const;
+
+/** `Icon / Chevron` 18x18 — `Union` 10x6. Points down when a section is open
+ *  and rotates a quarter turn when it is collapsed. */
+function ChevronIcon({ className = '' }: { className?: string }) {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      className={`shrink-0 transition-transform ${className}`}
+    >
+      <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** `charm:circle-tick` 16x16, beside "All changes Saved". Drawn only when
+ *  there is genuinely nothing outstanding — see `saveState`. */
+function CircleTickIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" className="shrink-0">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M8.5 12.3l2.4 2.4 4.6-4.9" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 /** A section with no label — the resolver's implicit catch-all for a module
  *  that has no FormSection rows at all. */
 const UNSECTIONED = 'Details';
@@ -80,7 +143,7 @@ interface FormConfig {
   record: (Record<string, unknown> & { id: string }) | null;
 }
 
-export interface RecordFormOverlayProps {
+export interface RecordFormScreenProps {
   slug: string;
   /** `module.label` — SINGULAR, the thing one of these records is. */
   label: string;
@@ -117,7 +180,7 @@ export interface LockedField {
 
 const NO_LOCKS: readonly LockedField[] = [];
 
-export function RecordFormOverlay({
+export function RecordFormScreen({
   slug,
   label,
   systemColumns,
@@ -125,9 +188,15 @@ export function RecordFormOverlay({
   recordId,
   onClose,
   onSaved,
-}: RecordFormOverlayProps) {
+}: RecordFormScreenProps) {
   const [config, setConfig] = useState<FormConfig | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  /** Bumped whenever Edit Fields persisted something — re-reads the config. */
+  const [fetchToken, setFetchToken] = useState(0);
+  const [layoutEditing, setLayoutEditing] = useState(false);
+
+  const specials = useSpecials();
+  const canEditLayout = specials.has('MANAGE_FIELDS_LAYOUTS');
 
   useEffect(() => {
     let cancelled = false;
@@ -180,37 +249,48 @@ export function RecordFormOverlay({
     return () => {
       cancelled = true;
     };
-  }, [slug, recordId]);
+  }, [slug, recordId, fetchToken]);
 
   const title = `${recordId === undefined ? 'Create' : 'Edit'} ${label}`;
 
   return (
-    <FullScreenOverlay title={title} onClose={onClose} trackPrefix={`${slug}.form`}>
-      {loadError !== null ? (
-        <div className="mx-auto max-w-2xl px-6 py-12">
-          <p role="alert" className="rounded bg-error/10 px-3 py-2 text-sm text-error">
-            {loadError}
-          </p>
-        </div>
+    <>
+      <PageTitle title={layoutEditing ? `Edit ${label} Fields` : title} />
+      {layoutEditing ? (
+        <FormLayoutEdit
+          slug={slug}
+          moduleLabel={label}
+          onChanged={() => setFetchToken((t) => t + 1)}
+          onDone={() => {
+            setLayoutEditing(false);
+            setFetchToken((t) => t + 1);
+          }}
+        />
+      ) : loadError !== null ? (
+        <p role="alert" className="rounded border border-error bg-surface px-3 py-2 text-sm text-error">
+          {loadError}
+        </p>
       ) : config === null ? (
         <p className="flex h-40 items-center justify-center text-sm text-body">Loading…</p>
       ) : (
-        // Keyed on the record so the inner form REMOUNTS when the overlay is
+        // Keyed on the record so the inner form REMOUNTS when the screen is
         // reused for a different record — `defaultValues` are read once, and a
         // reset() dance would leave dirty state behind.
         <RecordForm
-          key={config.record?.id ?? 'new'}
+          key={`${config.record?.id ?? 'new'}:${fetchToken}`}
           slug={slug}
           label={label}
           systemColumns={systemColumns}
           locked={locked}
           config={config}
           recordId={recordId}
+          canEditLayout={canEditLayout}
+          onEditLayout={() => setLayoutEditing(true)}
           onClose={onClose}
           onSaved={onSaved}
         />
       )}
-    </FullScreenOverlay>
+    </>
   );
 }
 
@@ -246,6 +326,9 @@ interface RecordFormProps {
   locked: readonly LockedField[];
   config: FormConfig;
   recordId: string | undefined;
+  /** MANAGE_FIELDS_LAYOUTS — draws the Edit Fields door on the action band. */
+  canEditLayout: boolean;
+  onEditLayout: () => void;
   onClose: () => void;
   onSaved: ((recordId: string) => void) | undefined;
 }
@@ -257,6 +340,8 @@ function RecordForm({
   locked,
   config,
   recordId,
+  canEditLayout,
+  onEditLayout,
   onClose,
   onSaved,
 }: RecordFormProps) {
@@ -292,13 +377,29 @@ function RecordForm({
     defaultValues: prepared.defaults,
   });
 
-  const navSections = useMemo(
-    () => prepared.sections.map((s) => ({ id: s.id, label: s.label })),
-    [prepared.sections],
-  );
-  const { activeId, registerSection, jumpTo } = useActiveSection(
-    useMemo(() => navSections.map((s) => s.id), [navSections]),
-  );
+  /**
+   * Which sections are collapsed. The file draws a chevron on every section
+   * header, so they collapse; nothing is collapsed to begin with, because a
+   * form that opens with its fields hidden reads as broken.
+   */
+  const [collapsedIds, setCollapsedIds] = useState<string[]>([]);
+  /** The unsaved-changes guard the file draws as `-cANCEL`. */
+  const [leaving, setLeaving] = useState(false);
+  const toggleSection = (id: string) =>
+    setCollapsedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
+  /**
+   * The file's "All changes Saved" slot. There is no autosave here, so it
+   * reports the truth rather than the reassurance — and the tick is drawn
+   * only when the words are actually "saved", never beside "Unsaved changes".
+   */
+  const saveState = isSubmitting
+    ? { label: 'Saving…', done: false }
+    : isDirty
+      ? { label: 'Unsaved changes', done: false }
+      : isCreate
+        ? { label: 'Nothing entered yet', done: false }
+        : { label: 'All changes Saved', done: true };
 
   /**
    * `save` writes this record; `copy` always creates a new one — that is what
@@ -343,8 +444,14 @@ function RecordForm({
           : `/api/modules/${slug}/records`,
         { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       );
-      onSaved?.(record.id);
-      onClose();
+      // ONE of the two, never both. `onSaved` is the caller with an opinion
+      // about where a save lands — the route wrapper sends the person to the
+      // record they just wrote — and `onClose` is the fallback for a caller
+      // that only wants the surface dismissed. Calling both navigates forward
+      // and then immediately back, which lands the person where they started
+      // and reads as a save that did nothing.
+      if (onSaved) onSaved(record.id);
+      else onClose();
       // The list is a server component; refreshing it is what makes the new
       // row appear without a full navigation.
       router.refresh();
@@ -367,49 +474,104 @@ function RecordForm({
 
   return (
     // min-h-full + flex-col: the footer sits at the bottom of a short form and
-    // sticks to the bottom of the viewport on a long one, without either case
-    // needing a measured height.
-    <form
-      noValidate
-      onSubmit={handleSubmit((values) => submit(values, 'save'))}
-      className="flex min-h-full flex-col"
-    >
-      <div className="mx-auto flex w-full max-w-6xl flex-1 gap-10 px-6">
-        <SectionNav slug={slug} sections={navSections} activeId={activeId} onJump={jumpTo} />
+    <form noValidate onSubmit={handleSubmit((values) => submit(values, 'save'))}>
+      {/* THE ACTION BAND — measured, and it sits ABOVE the form, not under
+          it. `Frame 482710` @1008,94 is 400x38 (132 + 12 + 122 + 12 + 122),
+          right-aligned; the save state is `Frame 482740` @284,105 on the
+          left. The file draws no sticky footer and no section navigator, so
+          neither is here. */}
+      <div className="flex h-[38px] items-center justify-between px-3">
+        <span className="flex items-center gap-2 text-[13px] font-medium tracking-[0.4px] text-primary">
+          {saveState.label}
+          {saveState.done ? <CircleTickIcon /> : null}
+        </span>
 
-        {/* min-w-0 so a wide grid scrolls its own content instead of pushing
-            the navigator off screen. */}
-        <div className="min-w-0 flex-1 py-8">
-          {prepared.sections.length === 0 ? (
-            <p className="text-sm text-body">
-              {label} has no fields on its form layout yet, so there is nothing to fill in.
-            </p>
-          ) : (
-            prepared.sections.map((section, index) => (
-              <section
-                key={section.id}
-                ref={registerSection(section.id)}
-                data-section-id={section.id}
-                // Full-width 1px separators between sections, as the frame
-                // draws them — never above the first one.
-                className={index === 0 ? '' : 'mt-10 border-t border-border pt-10'}
+        <div className="flex shrink-0 items-center gap-3">
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            data-track={saveTrack}
+            className={FORM_BUTTON.primary}
+          >
+            {isSubmitting ? 'Saving…' : 'Save'}
+          </button>
+          <button
+            type="button"
+            disabled={isSubmitting}
+            onClick={handleSubmit((values) => submit(values, 'copy'))}
+            // Always a create, in both modes — hence the create namespace.
+            data-track={`${slug}.create.saveAsNew`}
+            className={FORM_BUTTON.accent}
+          >
+            Save as New
+          </button>
+          <button
+            type="button"
+            // Asks only when there is something to lose. A guard on a form
+            // nobody touched is a dialog that trains people to dismiss guards.
+            onClick={() => (isDirty ? setLeaving(true) : onClose())}
+            data-track={cancelTrack}
+            className={FORM_BUTTON.neutral}
+          >
+            Cancel
+          </button>
+          {/* The door into editing the form ITSELF — drag, rename, add,
+              everything. Only for a holder of the layouts special; every
+              write it leads to is gated again server-side. */}
+          {canEditLayout ? (
+            <button
+              type="button"
+              onClick={onEditLayout}
+              data-track={`${slug}.form.editfields.open`}
+              className={FORM_BUTTON.neutral}
+            >
+              Edit Fields
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {prepared.sections.length === 0 ? (
+        <p className="mt-8 text-sm text-body">
+          {label} has no fields on its form layout yet, so there is nothing to fill in.
+        </p>
+      ) : (
+        prepared.sections.map((section, index) => {
+          const collapsed = collapsedIds.includes(section.id);
+          return (
+            <section key={section.id} data-section-id={section.id} className="mt-9 first:mt-8">
+              {/* `Frame 482707` @284,166 — 1128 wide, SPACE_BETWEEN, with the
+                  chevron at its right edge. The number is the RENDERED order,
+                  so a section an Admin reorders renumbers itself. */}
+              <button
+                type="button"
+                onClick={() => toggleSection(section.id)}
+                aria-expanded={!collapsed}
+                data-track={`${slug}.form.section.toggle`}
+                className="mx-3 flex w-[calc(100%-1.5rem)] items-center justify-between gap-4 text-left"
               >
-                <h3 className="mb-6 flex items-baseline gap-2 text-lg font-semibold text-heading">
+                <span className="flex min-w-0 items-baseline gap-1 text-lg font-semibold tracking-[0.4px] text-heading">
                   <span className="shrink-0 tabular-nums">{index + 1}.</span>
                   <span className="min-w-0 truncate" title={section.label}>
                     {section.label}
                   </span>
-                </h3>
+                </span>
+                <ChevronIcon className={collapsed ? '-rotate-90' : ''} />
+              </button>
 
+              {/* `Line 1` @272,197 — the full 1152 of the content wrapper, so
+                  it runs 12px wider than the field grid on either side. */}
+              <div aria-hidden="true" className="mt-3 h-px bg-border" />
+
+              {!collapsed ? (
                 <div
-                  className="grid gap-x-6 gap-y-6"
+                  className="mt-3 grid gap-3 px-3"
                   // The column count is the Admin's, read off the FormSection
-                  // row — a value only known at runtime, so it cannot be a
-                  // class. minmax(0,1fr) is what stops a long value from
-                  // widening its column past its share.
-                  style={{
-                    gridTemplateColumns: `repeat(${section.columns}, minmax(0, 1fr))`,
-                  }}
+                  // row — a runtime value, so it cannot be a class. The file
+                  // draws four 273-wide columns at a 12px gap across 1128.
+                  // minmax(0,1fr) is what stops a long value widening its
+                  // column past its share.
+                  style={{ gridTemplateColumns: `repeat(${section.columns}, minmax(0, 1fr))` }}
                 >
                   {section.fields.map(({ field, colSpan }) => (
                     <div key={field.key} style={{ gridColumn: `span ${colSpan}` }}>
@@ -423,49 +585,42 @@ function RecordForm({
                     </div>
                   ))}
                 </div>
-              </section>
-            ))
-          )}
+              ) : null}
+            </section>
+          );
+        })
+      )}
 
-          {formError !== null ? (
-            <p role="alert" className="mt-8 rounded bg-error/10 px-3 py-2 text-xs text-error">
-              {formError}
-            </p>
-          ) : null}
-        </div>
-      </div>
+      {formError !== null ? (
+        <p role="alert" className="mx-3 mt-6 rounded border border-error bg-surface px-3 py-2 text-xs text-error">
+          {formError}
+        </p>
+      ) : null}
 
-      <footer className="sticky bottom-0 border-t border-border bg-surface">
-        <div className="mx-auto flex w-full max-w-6xl items-center gap-3 px-6 py-4">
-          <Button type="submit" loading={isSubmitting} data-track={saveTrack}>
-            Save
-          </Button>
-          <Button
-            variant="secondary"
-            disabled={isSubmitting}
-            onClick={handleSubmit((values) => submit(values, 'copy'))}
-            // Always a create, in both modes — hence the create namespace.
-            data-track={`${slug}.create.saveAsNew`}
-          >
-            Save as New
-          </Button>
-          <Button variant="ghost" onClick={onClose} data-track={cancelTrack}>
-            Cancel
-          </Button>
-
-          {/* The frame's "All changes Saved" slot. There is no autosave, so it
-              reports the truth instead of a reassurance. */}
-          <span className="ml-auto shrink-0 text-xs text-muted">
-            {isSubmitting
-              ? 'Saving…'
-              : isDirty
-                ? 'Unsaved changes'
-                : isCreate
-                  ? 'Nothing entered yet'
-                  : 'All changes saved'}
-          </span>
-        </div>
-      </footer>
+      {/* `CRM _ Leads_Create Leads-cANCEL` draws this as a 511x203 `Pop up` —
+          the same shell as Delete Saved Filter, which is why it is the Popup
+          primitive rather than anything of its own. Leaving is the DESTRUCTIVE
+          side here: it is the button that throws the work away. */}
+      <Popup
+        title="You have not Saved your changes."
+        width={511}
+        open={leaving}
+        onClose={() => setLeaving(false)}
+        trackPrefix={`${slug}.form.leave`}
+        footer={
+          <PopupFooter
+            trackPrefix={`${slug}.form.leave`}
+            cancel={{ label: 'Stay Here', onClick: () => setLeaving(false) }}
+            next={{ label: 'Yes, Leave Page', tone: 'destructive', onClick: onClose }}
+          />
+        }
+      >
+        {/* The file reads "…move away from the pager?" — its own typo for
+            "page", corrected here rather than shipped to the floor. */}
+        <p className="text-sm text-heading">
+          Are you sure you want to move away from the page?
+        </p>
+      </Popup>
     </form>
   );
 }
@@ -642,7 +797,7 @@ function lockedDisplay(
 }
 
 /** Keep a value the record already holds selectable, whatever config says now. */
-function withCurrent(options: PicklistOption[], stored: unknown): PicklistOption[] {
+export function withCurrent(options: PicklistOption[], stored: unknown): PicklistOption[] {
   const values = Array.isArray(stored) ? stored : [stored];
   const missing = values.filter(
     (v): v is string =>
@@ -659,7 +814,7 @@ function withCurrent(options: PicklistOption[], stored: unknown): PicklistOption
  * and cannot be trusted to hold what this build expects — a row written by an
  * older field builder still has to render.
  */
-function toValidation(raw: unknown): FieldValidation | null {
+export function toValidation(raw: unknown): FieldValidation | null {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const source = raw as Record<string, unknown>;
   const out: FieldValidation = {};
@@ -679,7 +834,7 @@ function toValidation(raw: unknown): FieldValidation | null {
  * between server and client and lands as a hydration mismatch), and the two
  * screens must not disagree about what day a record is dated.
  */
-function toInputValue(type: FieldType, raw: unknown): unknown {
+export function toInputValue(type: FieldType, raw: unknown): unknown {
   if (type === 'CHECKBOX' || type === 'TOGGLE') return raw === true;
   if (type === 'MULTI_SELECT' || type === 'LANGUAGE_PICKER') {
     return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : [];

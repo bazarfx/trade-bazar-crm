@@ -95,7 +95,7 @@ export function FieldsetLegend({ children }: { children: React.ReactNode }) {
 export function FormErrorBanner({ message }: { message: string | null }) {
   if (!message) return null;
   return (
-    <p role="alert" className="mt-4 rounded bg-error/10 px-3 py-2 text-xs text-error">
+    <p role="alert" className="mt-4 rounded bg-[var(--globalcolors-red-10)] px-3 py-2 text-xs text-error">
       {message}
     </p>
   );

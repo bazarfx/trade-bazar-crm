@@ -8,8 +8,11 @@ import {
   MeasuringStrategy,
   PointerSensor,
   closestCorners,
+  pointerWithin,
+  useDroppable,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
   type DragOverEvent,
   type DragStartEvent,
@@ -17,13 +20,16 @@ import {
 import {
   SortableContext,
   arrayMove,
+  rectSortingStrategy,
   sortableKeyboardCoordinates,
+  useSortable,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { LAYOUT_TARGETS, type LayoutSpec, type LayoutTargetValue } from '@crm/shared';
 import { SortableRow } from '@/components/config/sortable';
 import { Segmented } from '@/components/config/segmented';
-import { Button, Panel, PanelHeader, Select } from '@/components/ui';
+import { Button, Panel, PanelHeader, Select, cn } from '@/components/ui';
 import { api, ApiClientError } from '@/lib/client-api';
 import {
   reconcile,
@@ -37,7 +43,20 @@ import {
 import { SectionForm } from './section-form';
 import { LayoutPreview } from './layout-preview';
 
-const COL_SPAN_CHOICES = [1, 2, 3] as const;
+const COL_SPAN_CHOICES = [1, 2, 3, 4] as const;
+
+/**
+ * Pointer-first collision detection. `closestCorners` alone cannot land a
+ * field in an EMPTY section: the placeholder's small rect loses the corner
+ * race to the big section cards around it, so `over` never becomes the empty
+ * zone and the drop is silently lost. Where the pointer actually is inside a
+ * droppable, that droppable wins; keyboard drags carry no pointer and fall
+ * through to the corner heuristic unchanged.
+ */
+const pointerFirstCollisions: CollisionDetection = (args) => {
+  const within = pointerWithin(args);
+  return within.length > 0 ? within : closestCorners(args);
+};
 
 function errMessage(err: unknown): string {
   return err instanceof ApiClientError ? err.message : 'Something went wrong — try again.';
@@ -197,8 +216,14 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
   );
 
   /** Resolve any draggable/droppable id to the section that contains it —
-   *  a section id resolves to itself, a field id to its holding section. */
+   *  a section id resolves to itself, a field id to its holding section, and
+   *  an empty section's placeholder droppable (`empty:<sectionId>`) to that
+   *  section, so dropping on the placeholder lands in the section. */
   function containerOf(id: string, model: DraftSection[]): string | null {
+    if (id.startsWith('empty:')) {
+      const sectionId = id.slice('empty:'.length);
+      return model.some((d) => d.sectionId === sectionId) ? sectionId : null;
+    }
     if (model.some((d) => d.sectionId === id)) return id;
     const holder = model.find((d) => d.fields.some((f) => f.fieldId === id));
     return holder ? holder.sectionId : null;
@@ -222,6 +247,14 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
       const fromSec = prev.find((s) => s.sectionId === from);
       const moving = fromSec?.fields.find((f) => f.fieldId === activeId);
       if (!moving) return prev;
+      // An EMPTY target section is NOT filled live: doing so unmounts the
+      // placeholder droppable under the pointer mid-drag, and dnd-kit's
+      // always-on measuring then loops on the changed droppable set until
+      // React aborts the render ("maximum update depth"). The placeholder
+      // stays mounted — and highlighted — for the whole drag, and the move
+      // lands once, in handleDragEnd.
+      const target = prev.find((s) => s.sectionId === to);
+      if (!target || target.fields.length === 0) return prev;
       return prev.map((s) => {
         if (s.sectionId === from) {
           return { ...s, fields: s.fields.filter((f) => f.fieldId !== activeId) };
@@ -260,12 +293,31 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
       return;
     }
 
-    // field: any cross-section move already landed in onDragOver — what is
-    // left is the final within-section reorder
+    // field: a cross-section move normally lands live in onDragOver, leaving
+    // only the within-section reorder here — but a keyboard drop can arrive
+    // on a foreign container without onDragOver ever firing for it, so the
+    // cross-section case is handled again rather than silently lost.
     setDraft((prev) => {
       const from = containerOf(activeId, prev);
       const to = containerOf(overId, prev);
-      if (!from || !to || from !== to) return prev;
+      if (!from || !to) return prev;
+      if (from !== to) {
+        const fromSec = prev.find((s) => s.sectionId === from);
+        const moving = fromSec?.fields.find((f) => f.fieldId === activeId);
+        if (!moving) return prev;
+        return prev.map((s) => {
+          if (s.sectionId === from) {
+            return { ...s, fields: s.fields.filter((f) => f.fieldId !== activeId) };
+          }
+          if (s.sectionId === to) {
+            const next = [...s.fields];
+            const overIndex = next.findIndex((f) => f.fieldId === overId);
+            next.splice(overIndex >= 0 ? overIndex : next.length, 0, moving);
+            return { ...s, fields: next };
+          }
+          return s;
+        });
+      }
       return prev.map((s) => {
         if (s.sectionId !== from) return s;
         const ids = s.fields.map((f) => f.fieldId);
@@ -387,7 +439,7 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
       )}
 
       {error && (
-        <p role="alert" className="rounded bg-error/10 px-4 py-3 text-sm text-error">
+        <p role="alert" className="rounded bg-[var(--globalcolors-red-10)] px-4 py-3 text-sm text-error">
           {error}
         </p>
       )}
@@ -404,7 +456,7 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
       ) : (
         <DndContext
           sensors={sensors}
-          collisionDetection={closestCorners}
+          collisionDetection={pointerFirstCollisions}
           measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
           onDragStart={handleDragStart}
           onDragOver={handleDragOver}
@@ -413,9 +465,10 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
         >
           <SortableContext items={sectionIds} strategy={verticalListSortingStrategy}>
             <div className="flex flex-col gap-4">
-              {draft.map((ds) => {
+              {draft.map((ds, index) => {
                 const meta = sectionById.get(ds.sectionId);
                 if (!meta) return null;
+                const columns = Math.max(1, meta.columns);
                 return (
                   <SortableRow
                     key={ds.sectionId}
@@ -426,7 +479,10 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
                       <PanelHeader
                         className="px-4 py-3"
                         title={
-                          <span className="flex min-w-0 items-baseline gap-3">
+                          <span className="flex min-w-0 items-center gap-3">
+                            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-pill border border-border bg-background text-xs font-medium tabular-nums text-heading">
+                              {index + 1}
+                            </span>
                             <span className="truncate">{meta.label}</span>
                             <span className="shrink-0 text-xs font-normal text-body">
                               {meta.columns}-column grid
@@ -456,44 +512,32 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
                       />
                       <SortableContext
                         items={ds.fields.map((f) => f.fieldId)}
-                        strategy={verticalListSortingStrategy}
+                        strategy={rectSortingStrategy}
                       >
-                        <div className="flex flex-col gap-1 p-3">
-                          {ds.fields.length === 0 && (
-                            <p className="rounded border border-dashed border-border px-3 py-4 text-center text-xs text-body">
-                              Drop fields here
-                            </p>
-                          )}
+                        {/* The section's REAL grid — the same runtime column
+                            count and spans the form renders, so arranging
+                            fields here is arranging the form. Runtime values
+                            cannot be classes, hence the inline styles. */}
+                        <div
+                          className="grid gap-3 p-4"
+                          style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+                        >
+                          {ds.fields.length === 0 && <EmptyDropZone sectionId={ds.sectionId} />}
                           {ds.fields.map((df) => {
                             const field = fieldById.get(df.fieldId);
                             if (!field) return null;
                             return (
-                              <SortableRow
+                              <FieldTile
                                 key={df.fieldId}
                                 id={df.fieldId}
-                                dataTrack={`${slug}.layout.field.drop`}
-                                className="rounded border border-border bg-background px-2 py-1.5"
-                              >
-                                <span
-                                  className="min-w-0 flex-1 truncate text-sm text-heading"
-                                  title={field.label}
-                                >
-                                  {field.label}
-                                </span>
-                                <span
-                                  className="hidden w-40 truncate text-xs text-body sm:block"
-                                  title={field.key}
-                                >
-                                  {field.key}
-                                </span>
-                                <Segmented
-                                  label={`Column span for ${field.label}`}
-                                  options={COL_SPAN_CHOICES}
-                                  value={df.colSpan}
-                                  onChange={(n) => setColSpan(ds.sectionId, df.fieldId, n)}
-                                  dataTrack={`${slug}.layout.field.colspan`}
-                                />
-                              </SortableRow>
+                                label={field.label}
+                                fieldKey={field.key}
+                                colSpan={df.colSpan}
+                                columns={columns}
+                                onColSpan={(n) => setColSpan(ds.sectionId, df.fieldId, n)}
+                                gripTrack={`${slug}.layout.field.drop`}
+                                colSpanTrack={`${slug}.layout.field.colspan`}
+                              />
                             );
                           })}
                         </div>
@@ -507,8 +551,22 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
 
           <DragOverlay>
             {activeDrag?.kind === 'field' && fieldById.get(activeDrag.id) && (
-              <div className="rounded border border-border bg-surface px-3 py-1.5 text-sm text-heading">
-                {fieldById.get(activeDrag.id)?.label}
+              // The ghost is the tile itself at a fixed width — the pointer
+              // carries the field being placed, not an abstract chip.
+              <div className="w-64 rounded border border-border bg-background px-3 pb-2 pt-1.5 shadow-lg">
+                <div className="flex items-center gap-1">
+                  <span aria-hidden="true" className="w-6 shrink-0 text-center text-sm text-muted">
+                    ⠿
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-sm text-heading">
+                    {fieldById.get(activeDrag.id)?.label}
+                  </span>
+                </div>
+                <div className="mt-1 flex h-8 items-center rounded border border-border bg-surface px-2">
+                  <span className="truncate text-xs text-muted">
+                    {fieldById.get(activeDrag.id)?.key}
+                  </span>
+                </div>
               </div>
             )}
             {activeDrag?.kind === 'section' && sectionById.get(activeDrag.id) && (
@@ -541,5 +599,104 @@ export function LayoutEditor({ slug, moduleLabel }: LayoutEditorProps) {
         />
       )}
     </div>
+  );
+}
+
+interface FieldTileProps {
+  id: string;
+  label: string;
+  fieldKey: string;
+  colSpan: number;
+  /** The section's column count — a span can never exceed the grid it sits in. */
+  columns: number;
+  onColSpan: (n: number) => void;
+  gripTrack: string;
+  colSpanTrack: string;
+}
+
+/**
+ * A field as it would sit on the form: label row on top, a faux input bar
+ * below. SortableRow cannot be used here — the tile is a grid item, and its
+ * `gridColumn` span must live on the same element as dnd-kit's transform —
+ * so this mirrors SortableRow's pattern directly: listeners/attributes go on
+ * an explicit grip button, keeping the Segmented control clickable.
+ */
+function FieldTile({
+  id,
+  label,
+  fieldKey,
+  colSpan,
+  columns,
+  onColSpan,
+  gripTrack,
+  colSpanTrack,
+}: FieldTileProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        gridColumn: `span ${Math.min(colSpan, columns)}`,
+      }}
+      className={cn(
+        'min-w-0 rounded border border-border bg-background px-3 pb-2 pt-1.5',
+        isDragging && 'opacity-50',
+      )}
+    >
+      <div className="flex items-center gap-1">
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label="Reorder"
+          data-track={gripTrack}
+          className="w-6 shrink-0 cursor-grab px-0 hover:text-heading active:cursor-grabbing"
+          {...attributes}
+          {...listeners}
+        >
+          <span aria-hidden="true">⠿</span>
+        </Button>
+        <span className="min-w-0 flex-1 truncate text-sm text-heading" title={label}>
+          {label}
+        </span>
+        <Segmented
+          label={`Column span for ${label}`}
+          options={COL_SPAN_CHOICES}
+          value={colSpan}
+          onChange={onColSpan}
+          dataTrack={colSpanTrack}
+        />
+      </div>
+      <div className="mt-1 flex h-8 min-w-0 items-center rounded border border-border bg-surface px-2">
+        <span className="truncate text-xs text-muted" title={fieldKey}>
+          {fieldKey}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The drop target an empty section keeps. A plain placeholder is invisible to
+ * dnd-kit — nothing inside the section is droppable once its last field
+ * leaves — so this registers itself under `empty:<sectionId>`, which
+ * containerOf resolves back to the section.
+ */
+function EmptyDropZone({ sectionId }: { sectionId: string }) {
+  const { setNodeRef, isOver } = useDroppable({ id: `empty:${sectionId}` });
+
+  return (
+    <p
+      ref={setNodeRef}
+      style={{ gridColumn: '1 / -1' }}
+      className={cn(
+        'rounded border border-dashed border-border px-3 py-6 text-center text-xs text-body',
+        isOver && 'border-primary text-primary',
+      )}
+    >
+      Drag fields here
+    </p>
   );
 }

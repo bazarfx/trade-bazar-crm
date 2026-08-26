@@ -234,7 +234,7 @@ export function FieldEditOverlay({
         />
 
         {dependencies && (
-          <div className="mt-6 rounded border border-error bg-error/10 p-4">
+          <div className="mt-6 rounded border border-error bg-[var(--globalcolors-red-10)] p-4">
             <h3 className="text-sm font-medium text-heading">
               Deleting “{field.label}” affects:
             </h3>
