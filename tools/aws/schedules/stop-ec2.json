@@ -1,0 +1,1 @@
+{"Input":"{\"InstanceIds\":[\"i-0f31e28ef78199ee1\"]}","RoleArn":"arn:aws:iam::010539085833:role/crm-test-scheduler","Arn":"arn:aws:scheduler:::aws-sdk:ec2:stopInstances"}

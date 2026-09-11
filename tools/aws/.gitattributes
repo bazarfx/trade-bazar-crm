@@ -1,0 +1,2 @@
+# These run on Linux (cloud-init, SSM). CRLF breaks bash.
+*.sh text eol=lf

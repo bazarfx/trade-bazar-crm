@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "StopTaggedInstances",
+      "Effect": "Allow",
+      "Action": "ec2:StopInstances",
+      "Resource": "arn:aws:ec2:ap-south-1:010539085833:instance/*",
+      "Condition": { "StringEquals": { "aws:ResourceTag/Project": "crm-test" } }
+    },
+    {
+      "Sid": "StopTestDatabase",
+      "Effect": "Allow",
+      "Action": "rds:StopDBInstance",
+      "Resource": "arn:aws:rds:ap-south-1:010539085833:db:crm-test-db"
+    }
+  ]
+}
